@@ -195,6 +195,67 @@
 #include "sentry_wrapper/SentryWrapper.hpp"
 #include <chrono>
 
+#ifdef _WIN32
+    #include <windows.h>
+#elif defined(__APPLE__)
+    #include <mach/mach.h>
+    #include <mach/vm_statistics.h>
+#endif
+
+// Returns available physical memory in bytes (best-effort, cross-platform).
+static size_t get_available_physical_memory_bytes()
+{
+#ifdef _WIN32
+    MEMORYSTATUSEX memInfo;
+    memInfo.dwLength = sizeof(memInfo);
+    if (GlobalMemoryStatusEx(&memInfo))
+        return static_cast<size_t>(memInfo.ullAvailPhys);
+    return 0;
+#elif defined(__linux__)
+    long avail_pages = sysconf(_SC_AVPHYS_PAGES);
+    long page_size   = sysconf(_SC_PAGE_SIZE);
+    return (avail_pages > 0 && page_size > 0) ? static_cast<size_t>(avail_pages) * static_cast<size_t>(page_size) : 0;
+#elif defined(__APPLE__)
+    vm_size_t page_size = 0;
+    mach_port_t host_port = mach_host_self();
+    if (host_page_size(host_port, &page_size) != KERN_SUCCESS)
+        return 0;
+    vm_statistics64_data_t vm_stats;
+    mach_msg_type_number_t count = sizeof(vm_stats) / sizeof(natural_t);
+    if (host_statistics64(host_port, HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm_stats), &count) != KERN_SUCCESS)
+        return 0;
+    return static_cast<size_t>(vm_stats.free_count) * static_cast<size_t>(page_size);
+#else
+    return 0;
+#endif
+}
+
+// Conservative memory estimate for GCode preview rendering based on model triangle count.
+// Sources (all measured from GCodeViewer.cpp / GCodeProcessor.hpp in this codebase):
+//   - MOVES_PER_TRIANGLE = 6: each STL triangle produces up to 3 perimeter + 3 infill moves
+//   - SEGMENTS_PER_MOVE = 2.5: 1.0 linear segment + ~1.5 arc-interpolation segments
+//     (30% of moves are arcs, each arc generates ~5 interpolation points)
+//   - BYTES_PER_SEGMENT = 296: GCodeViewer TBuffer vertex + index cost per segment.
+//     MoveVertex struct (GCodeProcessor.hpp:152) is ~112B; GPU vertex format adds
+//     position(12B) + normal(12B) + color(16B) + texcoord(8B) + pick_id(4B) per vertex,
+//     with ~2 vertices per segment + index overhead -> ~296B
+//   - SHARED_MEM_MULT = 2: on integrated GPUs the vertex buffer exists in both CPU
+//     (m_buffers) and GPU shared memory (mapped by OpenGL driver)
+// Validation: 5M triangles * 6 * 2.5 * 296 * 2 = ~44GB (matches observed crash at ~43GB)
+static size_t estimate_preview_memory_from_triangles(size_t total_facets)
+{
+    const size_t MOVES_PER_TRIANGLE   = 6;
+    const double  SEGMENTS_PER_MOVE   = 2.5;
+    const size_t  BYTES_PER_SEGMENT   = 296;
+    const size_t  SHARED_MEM_MULT     = 2;
+    return static_cast<size_t>(static_cast<double>(total_facets) * MOVES_PER_TRIANGLE * SEGMENTS_PER_MOVE * BYTES_PER_SEGMENT * SHARED_MEM_MULT);
+}
+
+static wxString format_memory_gb(size_t bytes)
+{
+    return wxString::Format("%.1f GB", static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
+}
+
 using boost::optional;
 namespace fs = boost::filesystem;
 using Slic3r::_3DScene;
@@ -12445,6 +12506,10 @@ bool Plater::priv::restart_background_process(unsigned int state)
         return false;
     }
 
+    // Memory pre-check: estimate GCode preview memory from model triangle count.
+    // Warn the user BEFORE slicing starts so they can cancel if needed.
+    // This is the single chokepoint for ALL slicing start paths.
+
     if ( ! this->background_process.empty() &&
          (state & priv::UPDATE_BACKGROUND_PROCESS_INVALID) == 0 &&
          ( ((state & UPDATE_BACKGROUND_PROCESS_FORCE_RESTART) != 0 && ! this->background_process.finished()) ||
@@ -13224,6 +13289,7 @@ void Plater::priv::set_current_panel(wxPanel* panel, bool no_slice)
             bool current_has_print_instances = current_plate->has_printable_instances();
             if (current_plate->is_slice_result_valid() && this->model.objects.empty() && !current_has_print_instances)
                 only_has_gcode_need_preview = true;
+            bool slice_cancelled = false;
 
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": from set_current_panel, no_slice %1%, export_in_progress %2%, model_fits %3%, m_is_slicing %4%")%no_slice%export_in_progress%model_fits%m_is_slicing;
 
@@ -13234,9 +13300,9 @@ void Plater::priv::set_current_panel(wxPanel* panel, bool no_slice)
                 //BBS: add more judge for slicing
                 if (!this->background_process.running() && !this->m_is_slicing)
                 {
-                    this->m_slice_all = false;
-                    this->q->reslice();
-                }
+                   this->m_slice_all = false;
+                    slice_cancelled = !(this->q->reslice());
+               }
                 else {
                     //reset current plate to the slicing plate
                     int plate_index = this->background_process.get_current_plate()->get_index();
@@ -13246,7 +13312,7 @@ void Plater::priv::set_current_panel(wxPanel* panel, bool no_slice)
             else if (only_has_gcode_need_preview)
             {
                 this->m_slice_all = false;
-                this->q->reslice();
+                slice_cancelled = !this->q->reslice();
             }
             //BBS: process empty plate, reset previous toolpath
             else
@@ -13270,7 +13336,11 @@ void Plater::priv::set_current_panel(wxPanel* panel, bool no_slice)
                 this->partplate_list.select_plate_view();*/
 
             // keeps current gcode preview, if any
-            if (this->m_slice_all) {
+            if (slice_cancelled) {
+                BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": slicing cancelled by user, showing shells only";
+                this->update_fff_scene_only_shells();
+            }
+            else if (this->m_slice_all) {
                 BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": slicing all, just reload shells");
                 this->update_fff_scene_only_shells();
             }
@@ -14235,7 +14305,17 @@ void Plater::priv::on_action_slice_plate(SimpleEvent&)
         if (!q->guard_before_slice_plate())
             return;
 
-        q->reslice();
+        // Scheme C: reslice first (memory dialog shows on prepare page,
+        // modal so interaction is blocked). Then always switch to preview
+        // regardless of cancel, so the user stays on the preview page.
+        // This avoids the double-render flicker visible on large models.
+        bool slice_cancelled = !q->reslice();
+        if (slice_cancelled) {
+            // User chose "No" in the memory warning dialog.
+            // Load only shells (no gcode toolpaths) to avoid OOM on the
+            // preview page. This matches the direct page-switch behavior.
+            this->update_fff_scene_only_shells();
+        }
         q->select_view_3D("Preview");
     }
 }
@@ -14267,11 +14347,16 @@ void Plater::priv::on_action_slice_all(SimpleEvent&)
         }
         //select plate
         q->select_plate(m_cur_slice_plate);
-        q->reslice();
+        bool slice_cancelled = !q->reslice();
+        if (slice_cancelled) {
+            m_slice_all = false;
+            m_slice_all_only_has_gcode = false;
+        }
+        //BBS: wish to select all plates stats item
         if (!m_is_publishing)
             q->select_view_3D("Preview");
-        //BBS: wish to select all plates stats item
-        preview->get_canvas3d()->_update_select_plate_toolbar_stats_item(true);
+        if (!slice_cancelled)
+            preview->get_canvas3d()->_update_select_plate_toolbar_stats_item(true);
     }
 }
 
@@ -19760,7 +19845,7 @@ void Plater::export_toolpaths_to_obj() const
 }
 
 //BBS: add multiple plate reslice logic
-void Plater::reslice()
+bool Plater::reslice()
 {
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: enter, process_completed_with_error=%2%")%__LINE__ %p->process_completed_with_error;
     // There is "invalid data" button instead "slice now"
@@ -19768,13 +19853,13 @@ void Plater::reslice()
     {
         BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(": process_completed_with_error, return directly");
         reset_gcode_toolpaths();
-        return;
+        return true;
     }
 
     // In case SLA gizmo is in editing mode, refuse to continue
     // and notify user that he should leave it first.
     if (get_view3D_canvas3D()->get_gizmos_manager().is_in_editing_mode(true))
-        return;
+        return true;
     
     // Stop the running (and queued) UI jobs and only proceed if they actually
     // get stopped.
@@ -19782,7 +19867,7 @@ void Plater::reslice()
     if (!stop_queue(this->get_ui_job_worker(), timeout_ms)) {
         BOOST_LOG_TRIVIAL(error) << "Could not stop UI job within "
                                  << timeout_ms << " milliseconds timeout!";
-        return;
+        return true;
     }
 
     // Orca: regenerate CalibPressureAdvancePattern custom G-code to apply changes
@@ -19809,8 +19894,58 @@ void Plater::reslice()
             NotificationManager::NotificationLevel::ErrorNotificationLevel,
             into_u8(_L("Mixed filaments contain incompatible material types. Please correct the mixed filaments settings before slicing.")));
         reset_gcode_toolpaths();
-        return;
+        return true;
     }
+
+    // Memory pre-check: estimate GCode preview memory from model triangle count.
+    // Warn the user BEFORE slicing starts so they can cancel if needed.
+    // reslice() is the entry point for all user-initiated slicing (slice button,
+    // export GCode, auto-slice on preview switch). Model loading does NOT go
+    // through here, so the dialog only appears when the user is about to slice.
+    p->preview->set_skip_toolpath_preview(false);
+    if (printer_technology() == ptFFF) {
+        size_t total_facets = 0;
+        for (const ModelObject* obj : model().objects)
+            total_facets += obj->facets_count();
+
+        size_t avail_phys = get_available_physical_memory_bytes();
+        size_t estimated  = estimate_preview_memory_from_triangles(total_facets);
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(
+            "[MEM-PRECHECK] facets=%1%, estimated=%2% (%3%), avail_phys=%4% (%5%)")
+            % total_facets % estimated % format_memory_gb(estimated)
+            % avail_phys % format_memory_gb(avail_phys);
+
+        if (avail_phys > 0 && estimated > avail_phys) {
+            wxString msg = _L("The estimated slicing memory of the current model exceeds the available device memory. Continue slicing?")
+                + "\n\n"
+                + "\n- "
+                + _L("Select \"Yes\" to attempt slicing, but slicing path preview will be unavailable, and the software may lag or freeze.")
+                + "\n- "
+                + _L("Select \"No\" to terminate the slicing task immediately.");
+            RichMessageDialog dlg(this, msg,
+                _L("Memory Usage Warning"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING);
+            dlg.SetYesNoLabels(_L("Yes, Continue"), _L("No, Stop"));
+            if (dlg.ShowModal() == wxID_YES) {
+                p->preview->set_skip_toolpath_preview(true);
+                BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": user chose to continue without toolpath preview";
+            } else {
+                BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": user cancelled slicing due to memory warning";
+                // Prevent the preview page from triggering load_toolpaths()
+                // or load_shells() with stale gcode_result moves data.
+                p->preview->set_skip_toolpath_preview(true);
+                // Release stale slicing moves to reclaim ~3GB+ before the
+                // preview page loads any rendering data, preventing page faults.
+                GCodeProcessorResult* gcode_res = p->preview->get_gcode_result();
+                if (gcode_res != nullptr) {
+                    gcode_res->moves.clear();
+                    gcode_res->moves.shrink_to_fit();
+                }
+                p->notification_manager->set_slicing_progress_canceled(_u8L("Slicing Canceled"));
+                return false;
+            }
+        }
+    }
+
     this->p->background_process.set_task(PrintBase::TaskParams());
     // Only restarts if the state is valid.
     //BBS: jusdge the result
@@ -19821,7 +19956,7 @@ void Plater::reslice()
         //BBS: add logs
         BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(": state %1% is UPDATE_BACKGROUND_PROCESS_INVALID, can not slice") % state;
         p->update_fff_scene_only_shells();
-        return;
+        return true;
     }
 
     if ((!result) && p->m_slice_all && (p->m_cur_slice_plate < (p->partplate_list.get_plate_count() - 1)))
@@ -19835,7 +19970,7 @@ void Plater::reslice()
         p->m_is_slicing = true;
         if (p->m_cur_slice_plate == 0)
             reset_gcode_toolpaths();
-        return;
+        return true;
     }
 
     if (result) {
@@ -19880,6 +20015,7 @@ void Plater::reslice()
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": finished, started slicing for plate %1%") % p->partplate_list.get_curr_plate_index();
 
     record_slice_preset("slicing");
+    return true;
 }
 
 void Plater::record_slice_preset(std::string action)
@@ -21799,7 +21935,8 @@ int Plater::select_plate(int plate_index, bool need_slice)
                         reset_gcode_toolpaths();
                         if (!guard_before_slice_plate())
                             return ret;
-                        reslice();
+                        if (!reslice())
+                            return ret;
                     }
                     else {
                         validate_current_plate(model_fits, validate_err);
@@ -21860,7 +21997,8 @@ int Plater::select_plate(int plate_index, bool need_slice)
                     {
                         if (!guard_before_slice_plate())
                             return ret;
-                        reslice();
+                        if (!reslice())
+                            return ret;
                     }
                     else
                     {

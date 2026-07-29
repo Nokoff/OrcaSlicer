@@ -17499,6 +17499,24 @@ msgstr ""
 "您知道嗎？您可以使用更多的牆層數和更高的疏散填充密度來提高模型\n"
 "強度。"
 
+msgid "Memory Usage Warning"
+msgstr "記憶體用量警告"
+
+msgid "The estimated slicing memory of the current model exceeds the available device memory. Continue slicing?"
+msgstr "目前模型預估切片記憶體超出裝置可用記憶體，是否繼續執行切片？"
+
+msgid "Select \"Yes\" to attempt slicing, but slicing path preview will be unavailable, and the software may lag or freeze."
+msgstr "選擇\"是\"可嘗試切片，但切片路徑預覽不可用，也可能出現軟體卡頓或無回應的問題"
+
+msgid "Select \"No\" to terminate the slicing task immediately."
+msgstr "選擇\"否\"將立即停止切片任務"
+
+msgid "Yes, Continue"
+msgstr "是，繼續"
+
+msgid "No, Stop"
+msgstr "否，停止"
+
 #: resources/data/hints.ini: [hint:When do you need to print with the printer
 #: door opened]
 #, fuzzy

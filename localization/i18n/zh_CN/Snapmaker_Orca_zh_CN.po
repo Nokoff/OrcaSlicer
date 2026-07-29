@@ -15349,3 +15349,21 @@ msgstr "其他颜色"
 
 msgid "Multiple Color"
 msgstr "多色"
+
+msgid "Memory Usage Warning"
+msgstr "内存占用预警"
+
+msgid "The estimated slicing memory of the current model exceeds the available device memory. Continue slicing?"
+msgstr "当前模型预估切片内存超出设备可用内存，是否继续执行切片？"
+
+msgid "Select \"Yes\" to attempt slicing, but slicing path preview will be unavailable, and the software may lag or freeze."
+msgstr "选择\"是\"可尝试切片，但切片路径预览不可用，也可能出现软件卡顿或无响应的问题"
+
+msgid "Select \"No\" to terminate the slicing task immediately."
+msgstr "选择\"否\"将立即停止切片任务"
+
+msgid "Yes, Continue"
+msgstr "是，继续"
+
+msgid "No, Stop"
+msgstr "否，停止"
