@@ -31,10 +31,17 @@ class SlicingError : public Exception
 public:
     using Exception::Exception;
     SlicingError(std::string const &msg, size_t objectId) : Exception(msg), objectId_(objectId) {}
+    // suggestedSink: how deep the object has to be sunk into the plate, in mm, for this error to
+    // go away. Zero when the error has no such automatic fix.
+    SlicingError(std::string const &msg, size_t objectId, double suggestedSink)
+        : Exception(msg), objectId_(objectId), suggestedSink_(suggestedSink)
+    {}
     size_t objectId() const { return objectId_; }
+    double suggestedSink() const { return suggestedSink_; }
 
 private:
     size_t objectId_ = 0;
+    double suggestedSink_ = 0.;
 };
 
 class SlicingErrors : public Exception

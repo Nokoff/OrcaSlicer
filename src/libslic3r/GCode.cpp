@@ -1484,10 +1484,33 @@ std::vector<GCode::LayerToPrint> GCode::collect_layers_to_print(const PrintObjec
         // Check that there are extrusions on the very first layer. The case with empty
         // first layer may result in skirt/brim in the air and maybe other issues.
         if (layers_to_print.size() == 1u) {
-            if (!has_extrusions)
-                throw Slic3r::SlicingError(
-                    _(L("One object has empty initial layer and can't be printed. Please Cut the bottom or enable supports.")),
-                    object.id().id);
+            if (!has_extrusions) {
+                // The object usually does rest on the plate, but it touches it on a rounded or
+                // ragged surface, so the lowest layers are too thin to extrude anything. Report
+                // how far up the first printable layer sits, otherwise the user has to guess how
+                // much to cut away.
+                coordf_t printable_z = 0.;
+                for (const Layer *layer : object.layers())
+                    if (layer->has_extrusions()) {
+                        printable_z = layer->print_z;
+                        break;
+                    }
+                std::string error = _(
+                    L("One object has empty initial layer and can't be printed. Please Cut the bottom or enable supports."));
+                error += "\n" + Slic3r::format(_(L("Object: %1%")), object.model_object()->name);
+                if (printable_z > 0.)
+                    error += "\n" + Slic3r::format(_(L("Nothing can be extruded below %1% mm. Sink the object into the plate "
+                                                      "or cut it by at least that much.")),
+                                                   printable_z);
+                // printable_z doubles as the fix: sinking the object that far puts the first layer
+                // that does extrude onto the plate. The UI offers it as a one click action, but
+                // only while the dead zone is a thin sliver. A tall one means the mesh is broken
+                // rather than merely resting on a curve, and sinking that far would quietly
+                // destroy the model.
+                const double object_height = object.layers().empty() ? 0. : object.layers().back()->print_z;
+                const double max_auto_sink = std::max(1., 0.1 * object_height);
+                throw Slic3r::SlicingError(error, object.id().id, printable_z <= max_auto_sink ? printable_z : 0.);
+            }
         }
 
         // In case there are extrusions on this layer, check there is a layer to lay it on.

@@ -327,6 +327,7 @@ wxDEFINE_EVENT(EVT_SEND_FINISHED,                   wxCommandEvent);
 wxDEFINE_EVENT(EVT_PUBLISH_FINISHED,                wxCommandEvent);
 //BBS: repair model
 wxDEFINE_EVENT(EVT_REPAIR_MODEL,                    wxCommandEvent);
+wxDEFINE_EVENT(EVT_FIX_EMPTY_FIRST_LAYER,           Event<EmptyFirstLayerFix>);
 wxDEFINE_EVENT(EVT_FILAMENT_COLOR_CHANGED,          wxCommandEvent);
 wxDEFINE_EVENT(EVT_INSTALL_PLUGIN_NETWORKING,       wxCommandEvent);
 wxDEFINE_EVENT(EVT_UPDATE_PLUGINS_WHEN_LAUNCH,       wxCommandEvent);
@@ -9229,6 +9230,7 @@ struct Plater::priv
     void on_right_click(RBtnEvent&);
     //BBS: add model repair
     void on_repair_model(wxCommandEvent &event);
+    void on_fix_empty_first_layer(Event<EmptyFirstLayerFix> &event);
     void on_filament_color_changed(wxCommandEvent &event);
     void show_install_plugin_hint(wxCommandEvent &event);
     void install_network_plugin(wxCommandEvent &event);
@@ -9492,6 +9494,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     this->q->Bind(EVT_SLICING_UPDATE, &priv::on_slicing_update, this);
     this->q->Bind(EVT_PUBLISH, &priv::on_action_publish, this);
     this->q->Bind(EVT_REPAIR_MODEL, &priv::on_repair_model, this);
+    this->q->Bind(EVT_FIX_EMPTY_FIRST_LAYER, &priv::on_fix_empty_first_layer, this);
     this->q->Bind(EVT_FILAMENT_COLOR_CHANGED, &priv::on_filament_color_changed, this);
     this->q->Bind(EVT_INSTALL_PLUGIN_NETWORKING, &priv::install_network_plugin, this);
     this->q->Bind(EVT_INSTALL_PLUGIN_HINT, &priv::show_install_plugin_hint, this);
@@ -14034,7 +14037,7 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
                 const PrintObject *print_object = this->background_process.m_fff_print->get_object(ObjectID(oid));
                 if (print_object) { ptrs.push_back(print_object->model_object()); }
             }
-            notification_manager->push_slicing_error_notification(message.first, ptrs);
+            notification_manager->push_slicing_error_notification(message.first, ptrs, evt.suggested_sink());
         }
         if (evt.invalidate_plater())
         {
@@ -14548,6 +14551,29 @@ void Plater::priv::on_object_select(SimpleEvent& evt)
 void Plater::priv::on_repair_model(wxCommandEvent &event)
 {
     wxGetApp().obj_list()->fix_through_netfabb();
+}
+
+void Plater::priv::on_fix_empty_first_layer(Event<EmptyFirstLayerFix> &event)
+{
+    if (event.data.sink_mm <= 0.)
+        return;
+
+    const ObjectID id(event.data.object_id);
+    auto           it = std::find_if(model.objects.begin(), model.objects.end(),
+                                     [&id](const ModelObject *o) { return o->id() == id; });
+    if (it == model.objects.end())
+        // The object is gone, the user edited the plate after the error was raised.
+        return;
+
+    Plater::TakeSnapshot snapshot(q, "Sink object into plate");
+    // This applies the "Cut the bottom" hint on the user's behalf. Geometry below the plate is
+    // not sliced, so the lowest layer that does extrude becomes the first layer.
+    (*it)->translate_instances(-event.data.sink_mm * Vec3d::UnitZ());
+
+    if (GLCanvas3D *canvas = q->canvas3D())
+        canvas->reload_scene(true, true);
+    wxGetApp().obj_list()->update_info_items(static_cast<size_t>(it - model.objects.begin()));
+    update((unsigned int) UpdateParams::FORCE_BACKGROUND_PROCESSING_UPDATE);
 }
 
 bool Plater::priv::confirm_auto_generated_gradients(wxWindow *parent, size_t num_physical)

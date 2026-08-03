@@ -70,6 +70,16 @@ bool SlicingProcessCompletedEvent::invalidate_plater() const
 	return false;
 }
 
+double SlicingProcessCompletedEvent::suggested_sink() const
+{
+	try {
+		this->rethrow_exception();
+	} catch (const Slic3r::SlicingError &ex) {
+		return ex.suggestedSink();
+	} catch (...) {}
+	return 0.;
+}
+
 std::pair<std::string, std::vector<size_t>> SlicingProcessCompletedEvent::format_error_message() const
 {
 	std::string error;

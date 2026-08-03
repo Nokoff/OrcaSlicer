@@ -95,6 +95,12 @@ wxDECLARE_EVENT(EVT_SLICING_UPDATE, Slic3r::SlicingStatusEvent);
 wxDECLARE_EVENT(EVT_PUBLISH,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_OPEN_PLATESETTINGSDIALOG,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_REPAIR_MODEL,        wxCommandEvent);
+// Payload of EVT_FIX_EMPTY_FIRST_LAYER: which object to sink into the plate, and by how much.
+struct EmptyFirstLayerFix {
+    size_t object_id { 0 };
+    double sink_mm   { 0. };
+};
+wxDECLARE_EVENT(EVT_FIX_EMPTY_FIRST_LAYER, Event<EmptyFirstLayerFix>);
 wxDECLARE_EVENT(EVT_FILAMENT_COLOR_CHANGED,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_INSTALL_PLUGIN_NETWORKING,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_INSTALL_PLUGIN_HINT,        wxCommandEvent);

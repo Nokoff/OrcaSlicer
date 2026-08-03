@@ -61,6 +61,9 @@ public:
 	// Produce a human readable message to be displayed by a notification or a message box.
 	// 2nd parameter defines whether the output should be displayed with a monospace font.
     std::pair<std::string, std::vector<size_t>> format_error_message() const;
+	// How deep the offending object has to be sunk into the plate for the error to go away, in mm.
+	// Zero when the error offers no such fix. Only meaningful together with a single object id.
+	double      suggested_sink() const;
 
 private:
 	StatusType 			m_status;

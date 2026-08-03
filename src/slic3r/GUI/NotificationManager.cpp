@@ -1846,7 +1846,7 @@ void NotificationManager::close_validate_warning_notification(const std::string&
     close_notification_of_type_and_text(NotificationType::ValidateWarning, _u8L("WARNING:") + "\n" + text);
 }
 
-void NotificationManager::push_slicing_error_notification(const std::string &text, std::vector<ModelObject const *> objs)
+void NotificationManager::push_slicing_error_notification(const std::string &text, std::vector<ModelObject const *> objs, double suggested_sink)
 {
     std::vector<ObjectID> ids;
     for (auto optr : objs) {
@@ -1881,6 +1881,19 @@ void NotificationManager::push_slicing_error_notification(const std::string &tex
             link.pop_back();
         }
         link += "] ";
+    }
+    // A fixable error takes the hyperlink over: a notification carries a single action, and
+    // applying the fix is worth more to the user than jumping to the object.
+    if (suggested_sink > 0. && ids.size() == 1) {
+        const size_t object_id = ids.front().id;
+        callback = [object_id, suggested_sink](wxEvtHandler *) {
+            // The model must not be touched while the notification is being drawn, so hand the
+            // fix to the Plater and let it run on the next event loop iteration.
+            wxQueueEvent(wxGetApp().plater(), new Event<EmptyFirstLayerFix>(EVT_FIX_EMPTY_FIRST_LAYER,
+                                                                           EmptyFirstLayerFix{object_id, suggested_sink}));
+            return true;
+        };
+        link = format(_u8L("Sink %1% mm into the plate and slice again"), suggested_sink);
     }
     set_all_slicing_errors_gray(false);
 	push_notification_data({ NotificationType::SlicingError, NotificationLevel::ErrorNotificationLevel, 0,  _u8L("Error:") + "\n" + text, link, callback }, 0);
@@ -2500,6 +2513,18 @@ bool NotificationManager::push_notification_data(const NotificationData& notific
 }
 bool NotificationManager::push_notification_data(std::unique_ptr<NotificationManager::PopNotification> notification, int timestamp)
 {
+	// Notifications embed user supplied text (object names above all), which may use a script the
+	// UI language does not cover. Reserve the glyphs before the notification is ever drawn,
+	// otherwise ImGui falls back to '?' for every such character.
+	if (ImGuiWrapper* imgui = wxGetApp().imgui()) {
+		const NotificationData& data = notification->get_data();
+		imgui->require_glyphs(data.text1);
+		imgui->require_glyphs(data.hypertext);
+		imgui->require_glyphs(data.text2);
+		// Slicing warnings are merged into an existing notification through append(ori_text).
+		imgui->require_glyphs(data.ori_text);
+	}
+
 	// if timestamped notif, push only new one
 	if (timestamp != 0) {
 		if (m_used_timestamps.find(timestamp) == m_used_timestamps.end()) {
