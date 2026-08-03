@@ -1653,7 +1653,6 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
     // Display a dialog showing the dirty options in a human readable form.
     for (PresetCollection* presets : presets_list)
     {
-        const DynamicPrintConfig& old_config = presets->get_selected_preset().config;
         const PrinterTechnology&  old_pt     = presets->get_selected_preset().printer_technology();
         const DynamicPrintConfig& new_config = presets->get_edited_preset().config;
         type = presets->type();
@@ -1665,6 +1664,30 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
         // Collect dirty options.
         const bool deep_compare = (type == Preset::TYPE_PRINTER || type == Preset::TYPE_SLA_MATERIAL);
         auto dirty_options = presets->current_dirty_options(deep_compare);
+
+        // A preset that came from a project is clean, so the diff above is empty by
+        // construction: get_selected_preset() and get_edited_preset() are the same preset.
+        // With no second config to compare against, its author's settings appear nowhere and
+        // this dialog renders an empty table. Compare against the collection's default preset
+        // instead, restricted to the keys the author actually changed. Transfer reads the
+        // values it moves from the edited preset, so this basis only sets the "old value"
+        // column -- what gets carried across is unaffected.
+        DynamicPrintConfig        project_baseline;
+        const DynamicPrintConfig *old_config_ptr = &presets->get_selected_preset().config;
+        const Preset             &edited_preset  = presets->get_edited_preset();
+        if (dirty_options.empty() && edited_preset.is_project_embedded && !edited_preset.project_changed_keys.empty()) {
+            project_baseline = presets->default_preset().config;
+            old_config_ptr   = &project_baseline;
+            for (const std::string &key : edited_preset.project_changed_keys) {
+                const ConfigOption *base = project_baseline.option(key);
+                const ConfigOption *proj = new_config.option(key);
+                // Drops the ignore-list keys folded into the stored list, keys this build no
+                // longer defines, and anything the default preset already agrees with.
+                if (base != nullptr && proj != nullptr && base->type() == proj->type() && *base != *proj)
+                    dirty_options.emplace_back(key);
+            }
+        }
+        const DynamicPrintConfig& old_config = *old_config_ptr;
 
         // process changes of extruders count
         if (type == Preset::TYPE_PRINTER && old_pt == ptFFF &&

@@ -3,6 +3,8 @@
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/LocalesUtils.hpp"
 
+#include <algorithm>
+
 #include <cereal/types/polymorphic.hpp>
 #include <cereal/types/string.hpp> 
 #include <cereal/types/vector.hpp> 
@@ -369,6 +371,78 @@ SCENARIO("Foreign sentinel values are translated while a config is deserialized.
 
             THEN("It is left alone, because 0 is a valid value for that key") {
                 REQUIRE(config.opt_int("support_filament") == 0);
+            }
+        }
+    }
+}
+
+// The re-apply itself lives in Plater::priv::load_files, which this binary cannot link.
+// What is covered here is the data path it depends on: that different_settings_to_system
+// names exactly the author's own changes, and that replaying those keys onto the fallback
+// process preset reproduces them.
+SCENARIO("A foreign project's process settings survive onto the fallback preset.", "[Config]") {
+    GIVEN("A project whose author customised support, and a printer that is not installed") {
+        // Exactly the keys and values Buzz+Colored.3mf carries, authored for a Bambu Lab H2C.
+        const std::vector<std::pair<std::string, std::string>> authored = {
+            {"enable_support",                   "1"},
+            {"independent_support_layer_height", "0"},
+            {"support_interface_pattern",        "rectilinear_interlaced"},
+            {"support_interface_spacing",        "0"},
+            {"support_top_z_distance",           "0"},
+        };
+
+        Slic3r::DynamicPrintConfig project = Slic3r::DynamicPrintConfig::full_print_config();
+        for (const auto &kv : authored)
+            project.set_deserialize_strict(kv.first, kv.second);
+
+        // Entry 0 of different_settings_to_system is the process preset's own list.
+        std::vector<std::string> authored_keys;
+        for (const auto &kv : authored)
+            authored_keys.emplace_back(kv.first);
+        project.option<ConfigOptionStrings>("different_settings_to_system", true)->values =
+            { Slic3r::escape_strings_cstyle(authored_keys), "", "" };
+
+        // The fallback the import lands on once the foreign printer cannot be resolved.
+        Slic3r::DynamicPrintConfig fallback = Slic3r::DynamicPrintConfig::full_print_config();
+        // Precondition: the fallback must actually differ, or the assertions below prove nothing.
+        REQUIRE(fallback.opt_bool("enable_support") != project.opt_bool("enable_support"));
+
+        WHEN("The project's own keys are replayed onto it") {
+            std::vector<std::string> keys;
+            Slic3r::unescape_strings_cstyle(
+                project.option<ConfigOptionStrings>("different_settings_to_system")->values.front(), keys);
+            Slic3r::DynamicPrintConfig values;
+            values.apply_only(project, keys, true);
+
+            THEN("The list names precisely what the author changed") {
+                REQUIRE(keys.size() == authored.size());
+                for (const auto &kv : authored)
+                    REQUIRE(std::find(keys.begin(), keys.end(), kv.first) != keys.end());
+            }
+
+            THEN("Every authored value lands on the fallback preset") {
+                for (const std::string &key : keys) {
+                    const ConfigOption *src = values.option(key);
+                    ConfigOption       *dst = fallback.option(key);
+                    REQUIRE(src != nullptr);
+                    REQUIRE(dst != nullptr);
+                    dst->set(src);
+                }
+                for (const auto &kv : authored)
+                    REQUIRE(fallback.option(kv.first)->serialize() == project.option(kv.first)->serialize());
+            }
+        }
+
+        WHEN("The author's support interface filament does not exist on this printer") {
+            // 0 means "use the current filament", so this is a 1-based index into the filament list.
+            project.set_deserialize_strict("support_interface_filament", "7");
+            const int num_filaments = 2;
+
+            THEN("It is clamped to what the printer has rather than dropped") {
+                int filament_idx = project.opt_int("support_interface_filament");
+                REQUIRE(filament_idx > num_filaments);
+                filament_idx = std::min(filament_idx, num_filaments);
+                REQUIRE(filament_idx == num_filaments);
             }
         }
     }

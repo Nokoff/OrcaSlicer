@@ -213,6 +213,11 @@ public:
 
     //BBS: add type for project-embedded
     bool                is_project_embedded = false;
+    // BBS: the keys a project's author changed away from their own system preset, taken
+    // from different_settings_to_system. A project-embedded preset is clean -- its values
+    // live *in* it rather than as modifications on top of a parent -- so this list is the
+    // only record of what would be lost if the preset is dropped on a printer switch.
+    std::vector<std::string> project_changed_keys;
     ConfigSubstitutions *loading_substitutions{nullptr};
     bool                is_user() const { return ! this->is_default && ! this->is_system && ! this->is_project_embedded; }
     //bool                is_user() const { return ! this->is_default && ! this->is_system; }

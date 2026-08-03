@@ -2250,6 +2250,11 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " " << preset.name << " filament_id: " << preset.filament_id << " base_id: " << preset.base_id;
     if (from_project) {
         preset.is_project_embedded = true;
+        // Remember what this project's author actually changed, so that dropping the preset
+        // on a later printer switch can offer those values for transfer instead of losing
+        // them silently. The list still carries the ignore-list keys folded in by the
+        // caller; consumers filter it against the preset they are comparing to.
+        preset.project_changed_keys.assign(different_settings_list.begin(), different_settings_list.end());
     }
     else {
         //external config
@@ -2258,8 +2263,14 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
         //we can not reach here
         preset.save(nullptr);
     }
-    if (&this->get_selected_preset() == &preset)
-        this->get_edited_preset().is_external = true;
+    if (&this->get_selected_preset() == &preset) {
+        // load_preset() copied the preset into m_edited_preset before the flags below were
+        // set on it, so carry them across by hand. is_project_embedded matters as much as
+        // is_external here: the printer-switch path reads it off the edited preset.
+        this->get_edited_preset().is_external           = true;
+        this->get_edited_preset().is_project_embedded   = preset.is_project_embedded;
+        this->get_edited_preset().project_changed_keys  = preset.project_changed_keys;
+    }
 
     //BBS: add config related logs
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(", type %1% added a preset, name %2%, path %3%, is_system %4%, is_default %5% is_external %6%")%Preset::get_type_string(m_type) %preset.name %preset.file %preset.is_system %preset.is_default %preset.is_external;

@@ -48,7 +48,75 @@ timelapse_type
 
 That is precisely the set that must survive. It needs no inference.
 
-## Proposed fix
+## Correction (2026-08-03, verified against a running build)
+
+The symptom table above is right about the outcome but wrong about *when* it
+happens, and the fix proposed below does not work as written. Verified:
+
+- The project's process preset **does** import correctly, as a project-embedded
+  preset (`0.2mm supports @BBL P2S ...`), holding every authored value. Nothing
+  is lost during import. The printer imports the same way.
+- The loss happens on the **printer switch**. `Tab.cpp:5521` computes
+  `pu.old_preset_dirty = ... && pu.presets->current_is_dirty()`. A project
+  -embedded preset is *clean*, so `may_discard_current_dirty_preset` is never
+  called for it and `Tab.cpp:5532` drops it with no transfer ever offered.
+- The empty transfer table has a structural cause, not the `coString` skip at
+  `UnsavedChangesDialog.cpp:1694`. `update_tree` builds its diff from
+  `old_config = selected.config` vs `new_config = edited.config`
+  (`UnsavedChangesDialog.cpp:1656`). For a project-embedded preset those are the
+  same object, so the diff is empty by construction. The dialog has no second
+  config to compare against.
+
+A first attempt (re-applying the captured keys at import, guarded on "only touch
+values that differ") was a no-op for exactly this reason: at import nothing
+differs yet. Guarding on value equality inverts the fix. Left in the tree behind
+`[nokoff]` diagnostics; it should be removed or replaced.
+
+### What actually has to change
+
+The values must be expressed as *modifications relative to a baseline*, because
+modifications are the only thing the transfer machinery can carry. Chosen
+approach (user's call, 2026-08-03): leave the import faithful and fix the switch
+path, rather than rebasing on open.
+
+Implemented 2026-08-03, in three parts:
+
+1. **`Preset::project_changed_keys`** (`Preset.hpp`). Populated in
+   `load_external_preset` where the project-embedded preset is created, from the
+   `different_settings_list` that function already receives.
+
+   Trap worth remembering: `load_preset()` copies the preset into
+   `m_edited_preset` *before* `is_project_embedded` is set on it, which is why
+   the pre-existing code re-sets `is_external` on the edited copy by hand. It
+   never did the same for `is_project_embedded`, so that flag reads false on the
+   edited preset — and the switch path reads exactly that preset. Both flags plus
+   the key list are now carried across.
+
+2. **`Tab.cpp:5521`** ORs in "project preset carrying author changes" alongside
+   `current_is_dirty()`, so `may_discard_current_dirty_preset` runs instead of
+   the preset being dropped at `Tab.cpp:5532`.
+
+3. **`UnsavedChangesDialog::update_tree`** no longer binds `old_config`
+   unconditionally to the selected preset. When the diff is empty *and* the
+   preset is project-embedded, it compares against `presets->default_preset()`,
+   restricted to the author's changed keys, filtering out the ignore-list keys
+   folded into that list, keys this build no longer defines, and values the
+   default already agrees with. `old_config` then binds to whichever basis was
+   chosen, leaving every downstream use untouched.
+
+   Known cosmetic limitation: the "old value" column shows built-in defaults
+   rather than the incoming preset's values, because the replacement preset is
+   not known at that point. This does not affect what Transfer carries —
+   `Tab.cpp:5806` caches the moved values from the *edited* preset, which holds
+   the project's real settings.
+
+Verified working in the GUI on 2026-08-03 with `Buzz+Colored.3mf`: opening the
+project and switching the printer to a Snapmaker U1 now lists the author's
+support settings in the transfer dialog, and Transfer carries them onto the U1
+process preset. CLI slicing segfaults in this environment, so this path can only
+be exercised by hand — there is no automated coverage of it.
+
+## Proposed fix (superseded — see the correction above)
 
 When a project's process preset cannot be matched to a system preset, re-apply
 the project's customised keys on top of whichever process preset ends up

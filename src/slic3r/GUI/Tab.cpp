@@ -5518,7 +5518,14 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
                 //{ Preset::Type::TYPE_SLA_MATERIAL,  &m_preset_bundle->sla_materials,ptSLA }
             };
             for (PresetUpdate &pu : updates) {
-                pu.old_preset_dirty = (old_printer_technology == pu.technology) && pu.presets->current_is_dirty();
+                // A preset that came from a project is clean -- its values live in it rather
+                // than as modifications on top of a parent -- so current_is_dirty() is false
+                // and it would be discarded below without the user ever being shown what it
+                // held. Treat one carrying its author's own changes as dirty so the transfer
+                // dialog runs and those values can be moved onto the incoming preset.
+                const Preset &pu_edited = pu.presets->get_edited_preset();
+                const bool    pu_project_at_risk = pu_edited.is_project_embedded && !pu_edited.project_changed_keys.empty();
+                pu.old_preset_dirty = (old_printer_technology == pu.technology) && (pu.presets->current_is_dirty() || pu_project_at_risk);
                 pu.new_preset_compatible = (new_printer_technology == pu.technology) && is_compatible_with_printer(pu.presets->get_edited_preset_with_vendor_profile(), new_printer_preset_with_vendor_profile);
                 if (!canceled)
                     canceled = pu.old_preset_dirty && !may_discard_current_dirty_preset(pu.presets, preset_name) && !pu.new_preset_compatible && !force_select;
