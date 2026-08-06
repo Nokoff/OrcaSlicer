@@ -734,6 +734,7 @@ void SMPhysicalPrinterDialog::OnOK(wxEvent& event)
             history_info.protocol          = (int) (m_config->option<ConfigOptionEnum<PrintHostType>>("host_type")->value);
             history_info.api_key           = cfg.opt_string("printhost_apikey");
             wxGetApp().app_config->save_device_info(history_info);
+            wxGetApp().app_config->set("last_connected_dev_id", history_info.dev_id);
         } else {
             // 绑定预设
             DeviceInfo info;
@@ -746,6 +747,7 @@ void SMPhysicalPrinterDialog::OnOK(wxEvent& event)
             info.sn        = "-1";
 
             wxGetApp().app_config->save_device_info(info);
+            wxGetApp().app_config->set("last_connected_dev_id", info.dev_id);
 
             MessageDialog msg_window(nullptr,
                                      host->get_host() + _L(" The target machine model has not been detected. Please bind manually. "),
