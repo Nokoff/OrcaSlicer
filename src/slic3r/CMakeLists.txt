@@ -120,10 +120,14 @@ set(SLIC3R_GUI_SOURCES
     GUI/filamentsync/FilamentData.hpp
     GUI/filamentsync/FilamentScrollBar.cpp
     GUI/filamentsync/FilamentScrollBar.hpp
+    GUI/filamentsync/FilamentMergePlan.cpp
+    GUI/filamentsync/FilamentMergePlan.hpp
     GUI/filamentsync/FilamentSyncAlgorithm.cpp
     GUI/filamentsync/FilamentSyncAlgorithm.hpp
     GUI/filamentsync/MachineFilamentPicker.cpp
     GUI/filamentsync/MachineFilamentPicker.hpp
+    GUI/filamentsync/MergeFilamentsDialog.cpp
+    GUI/filamentsync/MergeFilamentsDialog.hpp
     GUI/filamentsync/PlaterPreview.cpp
     GUI/filamentsync/PlaterPreview.hpp
     GUI/filamentsync/SyncConfirmDialog.cpp

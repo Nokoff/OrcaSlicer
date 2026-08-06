@@ -4,6 +4,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <boost/filesystem/path.hpp>
 
@@ -177,6 +178,13 @@ public:
     std::map<int, DynamicPrintConfig> build_filament_ams_list(MachineObject* obj);
     void sync_ams_list();
     void show_sync_filament_dialog();
+    // Batch merge: collapse the filament list onto the filaments loaded on the
+    // printer, or onto whichever project filaments already look alike.
+    void show_merge_to_loaded_dialog();
+    void show_merge_similar_dialog();
+    // Runs a batch of (source, target) merges given in the filament indices
+    // that were current when the batch was planned.
+    void apply_filament_merges(const std::vector<std::pair<size_t, size_t>>& merges);
     // Orca
     void show_SEMM_buttons(bool bshow);
     void update_dynamic_filament_list();

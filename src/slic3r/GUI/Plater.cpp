@@ -191,6 +191,7 @@
 
 #include "filamentsync/SyncConfirmDialog.hpp"
 #include "filamentsync/SyncFilamentColorDialog.hpp"
+#include "filamentsync/MergeFilamentsDialog.hpp"
 
 #include "sentry_wrapper/SentryWrapper.hpp"
 #include <chrono>
@@ -962,6 +963,8 @@ struct Sidebar::priv
     ScalableButton *  m_bpButton_ams_filament;
     ScalableButton *  m_bpButton_set_filament;
     ScalableButton *  m_bpButton_sync_filament = nullptr;
+    ScalableButton *  m_bpButton_merge_loaded = nullptr;
+    ScalableButton *  m_bpButton_merge_similar = nullptr;
     int                         m_menu_filament_id = -1;
     wxPanel* m_panel_filament_content;
     wxScrolledWindow* m_scrolledWindow_filament_content;
@@ -2427,6 +2430,22 @@ Sidebar::Sidebar(Plater *parent)
     });
     p->m_bpButton_sync_filament = sync_filament_btn;
 
+    // Merge onto the filaments loaded on the printer
+    ScalableButton* merge_loaded_btn = new ScalableButton(p->m_panel_physical_filaments_title, wxID_ANY, "merge_filament_loaded");
+    merge_loaded_btn->SetToolTip(_L("Merge filaments onto the ones loaded on the printer"));
+    merge_loaded_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent& e) {
+        show_merge_to_loaded_dialog();
+    });
+    p->m_bpButton_merge_loaded = merge_loaded_btn;
+
+    // Merge filaments that already look alike
+    ScalableButton* merge_similar_btn = new ScalableButton(p->m_panel_physical_filaments_title, wxID_ANY, "merge_filament_similar");
+    merge_similar_btn->SetToolTip(_L("Merge filaments with similar colors"));
+    merge_similar_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent& e) {
+        show_merge_similar_dialog();
+    });
+    p->m_bpButton_merge_similar = merge_similar_btn;
+
     // Delete filament button — delegates to delete_filament for consistent remap behavior
     ScalableButton* del_btn = new ScalableButton(p->m_panel_physical_filaments_title, wxID_ANY, "delete_filament");
     del_btn->SetToolTip(_L("Remove last filament"));
@@ -2459,6 +2478,8 @@ Sidebar::Sidebar(Plater *parent)
     p->m_bpButton_add_filament = add_btn;
 
     h_physical_title->Add(sync_filament_btn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
+    h_physical_title->Add(merge_loaded_btn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
+    h_physical_title->Add(merge_similar_btn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
     h_physical_title->Add(del_btn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
     h_physical_title->Add(add_btn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
     auto* white_right_f = new wxPanel(p->m_panel_physical_filaments_title, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(SidebarProps::ContentMargin()), -1));
@@ -2467,8 +2488,11 @@ Sidebar::Sidebar(Plater *parent)
     p->m_panel_physical_filaments_title->SetSizer(h_physical_title);
     p->m_panel_physical_filaments_title->Layout();
 
-    if (p->combos_filament.size() <= 1)
+    if (p->combos_filament.size() <= 1) {
         h_physical_title->Hide(p->m_bpButton_del_filament);
+        h_physical_title->Hide(p->m_bpButton_merge_loaded);
+        h_physical_title->Hide(p->m_bpButton_merge_similar);
+    }
 
     sizer_filaments2->AddSpacer(FromDIP(8));
     sizer_filaments2->Add(p->m_panel_physical_filaments_title, 0, wxEXPAND, 0);
@@ -3247,6 +3271,10 @@ void Sidebar::msw_rescale()
     p->m_color_mix_icon->msw_rescale();
     p->m_bpButton_add_filament->msw_rescale();
     p->m_bpButton_del_filament->msw_rescale();
+    if (p->m_bpButton_merge_loaded)
+        p->m_bpButton_merge_loaded->msw_rescale();
+    if (p->m_bpButton_merge_similar)
+        p->m_bpButton_merge_similar->msw_rescale();
     p->m_bpButton_ams_filament->msw_rescale();
     p->m_bpButton_set_filament->msw_rescale();
     p->m_flushing_volume_btn->Rescale();
@@ -3320,6 +3348,10 @@ void Sidebar::sys_color_changed()
     p->m_color_mix_icon->msw_rescale();
     p->m_bpButton_add_filament->msw_rescale();
     p->m_bpButton_del_filament->msw_rescale();
+    if (p->m_bpButton_merge_loaded)
+        p->m_bpButton_merge_loaded->msw_rescale();
+    if (p->m_bpButton_merge_similar)
+        p->m_bpButton_merge_similar->msw_rescale();
     p->m_bpButton_ams_filament->msw_rescale();
     p->m_bpButton_set_filament->msw_rescale();
     p->m_flushing_volume_btn->Rescale();
@@ -3450,10 +3482,16 @@ void Sidebar::on_filaments_change(size_t num_filaments)
     if (p->m_bpButton_del_filament != nullptr && p->m_panel_physical_filaments_title != nullptr) {
         auto* inner_sizer = p->m_panel_physical_filaments_title->GetSizer();
         if (inner_sizer) {
-            if (num_filaments > 1)
-                inner_sizer->Show(p->m_bpButton_del_filament);
-            else
-                inner_sizer->Hide(p->m_bpButton_del_filament);
+            // Deleting and merging both need something to act on.
+            const bool multi = num_filaments > 1;
+            for (ScalableButton* btn : {p->m_bpButton_del_filament, p->m_bpButton_merge_loaded, p->m_bpButton_merge_similar}) {
+                if (btn == nullptr)
+                    continue;
+                if (multi)
+                    inner_sizer->Show(btn);
+                else
+                    inner_sizer->Hide(btn);
+            }
         }
     }
 
@@ -7491,10 +7529,16 @@ void Sidebar::on_filaments_delete(size_t filament_id)
     if (p->m_bpButton_del_filament != nullptr && p->m_panel_physical_filaments_title != nullptr) {
         auto* inner_sizer = p->m_panel_physical_filaments_title->GetSizer();
         if (inner_sizer) {
-            if (p->combos_filament.size() > 1)
-                inner_sizer->Show(p->m_bpButton_del_filament);
-            else
-                inner_sizer->Hide(p->m_bpButton_del_filament);
+            // Deleting and merging both need something to act on.
+            const bool multi = p->combos_filament.size() > 1;
+            for (ScalableButton* btn : {p->m_bpButton_del_filament, p->m_bpButton_merge_loaded, p->m_bpButton_merge_similar}) {
+                if (btn == nullptr)
+                    continue;
+                if (multi)
+                    inner_sizer->Show(btn);
+                else
+                    inner_sizer->Hide(btn);
+            }
         }
     }
 
@@ -8286,12 +8330,170 @@ void Sidebar::show_sync_filament_dialog()
     }
 }
 
+// A physical filament that an enabled mixed filament is built from cannot be
+// merged away: removing it takes the mixed filament with it.
+static std::vector<bool> build_mergeable_filament_mask(PresetBundle* preset_bundle)
+{
+    const size_t num_physical = preset_bundle->filament_presets.size();
+    std::vector<bool> mergeable(num_physical, true);
+    for (size_t i = 0; i < num_physical; ++i)
+        mergeable[i] = preset_bundle->mixed_filaments.mixed_filaments_using_physical((unsigned int) (i + 1)).empty();
+    return mergeable;
+}
+
+// Flatten a plan into the (source, target) pairs apply_filament_merges() wants.
+static std::vector<std::pair<size_t, size_t>> merge_pairs_from_plan(const FilamentMergePlan& plan)
+{
+    std::vector<std::pair<size_t, size_t>> merges;
+    merges.reserve(plan.steps.size());
+    for (const FilamentMergeStep& step : plan.steps)
+        merges.emplace_back(step.source, step.target);
+    return merges;
+}
+
+void Sidebar::show_merge_to_loaded_dialog()
+{
+    PresetBundle* preset_bundle = wxGetApp().preset_bundle;
+    if (!preset_bundle || p->combos_filament.size() <= 1)
+        return;
+
+    std::vector<FilamentData> machine_list;
+    build_machine_filament_list(preset_bundle, machine_list);
+    const bool has_loaded = std::any_of(machine_list.begin(), machine_list.end(),
+                                        [](const FilamentData& fd) { return !is_none_filament(fd); });
+    if (!has_loaded) {
+        SyncRichConfirmDialog dlg(wxGetApp().plater(),
+            _L("The filaments loaded on the printer are not known yet. Sync filament information from the "
+               "printer first, then merge onto what it has loaded."),
+            wxOK);
+        dlg.SetOKLabel(_L("Got it"));
+        dlg.CentreOnScreen();
+        dlg.ShowModal();
+        return;
+    }
+
+    std::vector<FilamentData> design_list;
+    build_design_filament_list(preset_bundle, design_list);
+
+    MergeFilamentsDialog dlg(wxGetApp().plater(), MergeFilamentsDialog::Mode::ToLoaded,
+                             design_list, machine_list, build_mergeable_filament_mask(preset_bundle));
+    dlg.CentreOnScreen();
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    const FilamentMergePlan& plan = dlg.plan();
+
+    // Retint first, while the plan's indices still address the current slots.
+    // Only survivors that stand in for a loaded filament are touched.
+    if (dlg.matchLoadedAppearance()) {
+        auto* co  = preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
+        auto* mco = preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colors");
+        auto* cmo = preset_bundle->project_config.option<ConfigOptionInts>("filament_colour_mode");
+
+        for (size_t k = 0; k < plan.survivors.size(); ++k) {
+            const int match = k < plan.survivor_machine_match.size() ? plan.survivor_machine_match[k] : -1;
+            if (match < 0 || size_t(match) >= machine_list.size())
+                continue;
+
+            const size_t        i      = plan.survivors[k];
+            const FilamentData& loaded = machine_list[match];
+
+            if (Preset* matched = resolve_filament_preset(preset_bundle, loaded.m_name, loaded.m_type))
+                preset_bundle->set_filament_preset(i, matched->name);
+            if (co && i < co->values.size())
+                co->values[i] = into_u8(getMainColor(loaded.m_color).GetAsString(wxC2S_HTML_SYNTAX));
+            if (mco && i < mco->values.size())
+                mco->values[i] = loaded.m_color.ToMultiColorsString();
+            if (cmo && i < cmo->values.size())
+                cmo->values[i] = FilamentColorModeToConfig(loaded.m_color.NormalizedMode());
+        }
+    }
+
+    apply_filament_merges(merge_pairs_from_plan(plan));
+}
+
+void Sidebar::show_merge_similar_dialog()
+{
+    PresetBundle* preset_bundle = wxGetApp().preset_bundle;
+    if (!preset_bundle || p->combos_filament.size() <= 1)
+        return;
+
+    std::vector<FilamentData> design_list;
+    build_design_filament_list(preset_bundle, design_list);
+
+    MergeFilamentsDialog dlg(wxGetApp().plater(), MergeFilamentsDialog::Mode::Similar,
+                             design_list, {}, build_mergeable_filament_mask(preset_bundle));
+    dlg.CentreOnScreen();
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    apply_filament_merges(merge_pairs_from_plan(dlg.plan()));
+}
+
+void Sidebar::apply_filament_merges(const std::vector<std::pair<size_t, size_t>>& merges)
+{
+    if (merges.empty())
+        return;
+
+    wxBusyCursor busy;
+
+    const size_t old_count = p->combos_filament.size();
+
+    // Each merge removes a slot, so every filament above it shifts down one and
+    // the planned indices go stale. Translate through a live table instead.
+    std::vector<int> current(old_count);
+    std::iota(current.begin(), current.end(), 0);
+
+    std::vector<std::pair<size_t, size_t>> ordered = merges;
+    std::sort(ordered.begin(), ordered.end(),
+              [](const std::pair<size_t, size_t>& a, const std::pair<size_t, size_t>& b) { return a.first > b.first; });
+
+    for (const auto& merge : ordered) {
+        if (merge.first >= current.size() || merge.second >= current.size())
+            continue;
+        const int from = current[merge.first];
+        const int to   = current[merge.second];
+        if (from < 0 || to < 0 || from == to)
+            continue;
+
+        // Reuses the single-filament merge path, so painted regions, per-object
+        // assignments and print sequences are remapped the same way.
+        delete_filament(size_t(from), to);
+
+        current[merge.first] = -1;
+        for (int& id : current)
+            if (id > from)
+                --id;
+    }
+
+    // The flush matrix was built for the old colour set.
+    for (size_t i = 0; i < p->combos_filament.size(); ++i)
+        auto_calc_flushing_volumes(int(i));
+
+    for (auto* combo : p->combos_filament)
+        if (combo)
+            combo->update();
+
+    wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
+    wxGetApp().plater()->update();
+
+    wxGetApp().plater()->get_notification_manager()->push_notification(
+        NotificationType::CustomNotification,
+        NotificationManager::NotificationLevel::RegularNotificationLevel,
+        format(_u8L("Merged %1% filaments down to %2%."), old_count, p->combos_filament.size()));
+}
+
 void Sidebar::show_SEMM_buttons(bool bshow)
 {
     if(p->m_bpButton_add_filament)
         p->m_bpButton_add_filament->Show(bshow);
     if (p->m_bpButton_del_filament && p->combos_filament.size() > 1) // ORCA add filament count as condition to prevent showing Flushing volumes and Del Filament icon visible while only 1 filament exist
         p->m_bpButton_del_filament->Show(bshow);
+    // Merging is only meaningful alongside the other multi-filament controls.
+    if (p->m_bpButton_merge_loaded && p->combos_filament.size() > 1)
+        p->m_bpButton_merge_loaded->Show(bshow);
+    if (p->m_bpButton_merge_similar && p->combos_filament.size() > 1)
+        p->m_bpButton_merge_similar->Show(bshow);
     if (p->m_flushing_volume_btn && p->combos_filament.size() > 1) // ORCA add filament count as condition to prevent showing Flushing volumes and Del Filament icon visible while only 1 filament exist
         p->m_flushing_volume_btn->Show(bshow);
     Layout();
