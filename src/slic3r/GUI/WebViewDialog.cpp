@@ -4,6 +4,7 @@
 #include "slic3r/GUI/wxExtensions.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
+#include "slic3r/GUI/MyFilesLibrary.hpp"
 #include "sentry_wrapper/SentryWrapper.hpp"
 #include "../Utils/Http.hpp"
 #include "SSWCP.hpp"
@@ -15,8 +16,11 @@
 #include <wx/toolbar.h>
 #include <wx/textdlg.h>
 #include <wx/url.h>
+#include <wx/button.h>
 
 #include <slic3r/GUI/Widgets/WebView.hpp>
+
+#include <nlohmann/json.hpp>
 
 namespace pt = boost::property_tree;
 
@@ -37,10 +41,7 @@ namespace GUI {
 WebViewPanel::WebViewPanel(wxWindow *parent)
         : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize)
  {
-    wxString url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) + "/web/flutter_web/index.html?path=0");
-    // wxString url = wxString::Format("file://%s/web/homepage/index.html?path=homepage.html", from_u8(resources_dir()));
-    // wxString url     = wxString("http://127.0.0.1:") + wxString(std::to_string(PAGE_HTTP_PORT)) + wxString("/web/flutter_web/index.html?path=1");
-    url = wxGetApp().get_international_url(url);
+    wxString url = make_home_url();
 
     // test
     // url = "http://localhost:13619/web/flutter_web/1.html";
@@ -86,6 +87,23 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
     // Create the info panel
     m_info = new wxInfoBar(this);
     topsizer->Add(m_info, wxSizerFlags().Expand());
+
+    // Home / My Files sub-tab bar
+    m_subtab_bar = new wxPanel(this, wxID_ANY);
+    m_subtab_bar->SetBackgroundColour(wxColour(255, 255, 255));
+    auto *subtab_sizer = new wxBoxSizer(wxHORIZONTAL);
+    m_btn_home = new wxButton(m_subtab_bar, wxID_ANY, _L("Open Files"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+    m_btn_my_files = new wxButton(m_subtab_bar, wxID_ANY, _L("My Files"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+    subtab_sizer->Add(m_btn_home, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP | wxBOTTOM, FromDIP(8));
+    subtab_sizer->Add(m_btn_my_files, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP | wxBOTTOM, FromDIP(8));
+    subtab_sizer->AddStretchSpacer();
+    m_subtab_bar->SetSizer(subtab_sizer);
+    topsizer->Add(m_subtab_bar, 0, wxEXPAND);
+
+    m_btn_home->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { show_home_page(); });
+    m_btn_my_files->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { show_my_files_page(); });
+    update_subtab_ui();
+
     // Create the webview
     m_browser = WebView::CreateWebView(this, url);
 
@@ -451,6 +469,87 @@ void WebViewPanel::SendRecentList(int images)
     RunScript(wxString::Format("window.postMessage(%s)", oss.str()));
 }
 
+void WebViewPanel::SendMyFilesList(int images)
+{
+    nlohmann::json req;
+    nlohmann::json data;
+    MyFilesLibrary::collect_files(data, images);
+    req["sequence_id"] = "";
+    req["command"]     = "get_my_files";
+    req["folder"]      = MyFilesLibrary::get_folder_path();
+    req["response"]    = data;
+    wxString strJS = wxString::Format("window.postMessage(%s)",
+                                      wxString::FromUTF8(req.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore)));
+    RunScript(strJS);
+}
+
+wxString WebViewPanel::make_home_url() const
+{
+    wxString url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
+                                      "/web/flutter_web/index.html?path=0");
+    return wxGetApp().get_international_url(url);
+}
+
+wxString WebViewPanel::make_my_files_url() const
+{
+    wxString url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
+                                      "/web/myfiles/index.html");
+    url = wxGetApp().get_international_url(url);
+    // Homepage TranslatePage() reads ?lang= keys matching text.js (en, zh_CN, de_DE, ...).
+    std::string lang = "en";
+    if (wxGetApp().app_config) {
+        lang = wxGetApp().app_config->get("language");
+        if (lang.empty())
+            lang = "en";
+        else if (lang == "en_US" || lang.rfind("en", 0) == 0)
+            lang = "en";
+    }
+    if (url.Find("lang=") == wxNOT_FOUND) {
+        url += wxString::Format("&lang=%s", wxString::FromUTF8(lang));
+    }
+    return url;
+}
+
+void WebViewPanel::update_subtab_ui()
+{
+    if (!m_btn_home || !m_btn_my_files || !m_subtab_bar)
+        return;
+
+    const bool dark = wxGetApp().app_config && wxGetApp().app_config->get("dark_color_mode") == "1";
+    const wxColour bar_bg       = dark ? wxColour(36, 36, 40) : wxColour(255, 255, 255);
+    const wxColour active_bg    = dark ? wxColour(0, 150, 136) : wxColour(191, 225, 222);
+    const wxColour inactive_bg  = bar_bg;
+    const wxColour active_fg    = dark ? wxColour(239, 239, 240) : wxColour(0, 105, 92);
+    const wxColour inactive_fg  = dark ? wxColour(179, 179, 181) : wxColour(80, 80, 80);
+
+    m_subtab_bar->SetBackgroundColour(bar_bg);
+    m_btn_home->SetBackgroundColour(m_showing_my_files ? inactive_bg : active_bg);
+    m_btn_home->SetForegroundColour(m_showing_my_files ? inactive_fg : active_fg);
+    m_btn_my_files->SetBackgroundColour(m_showing_my_files ? active_bg : inactive_bg);
+    m_btn_my_files->SetForegroundColour(m_showing_my_files ? active_fg : inactive_fg);
+    m_subtab_bar->Refresh();
+    m_btn_home->Refresh();
+    m_btn_my_files->Refresh();
+}
+
+void WebViewPanel::show_home_page()
+{
+    if (!m_browser)
+        return;
+    m_showing_my_files = false;
+    update_subtab_ui();
+    m_browser->LoadURL(make_home_url());
+}
+
+void WebViewPanel::show_my_files_page()
+{
+    if (!m_browser)
+        return;
+    m_showing_my_files = true;
+    update_subtab_ui();
+    m_browser->LoadURL(make_my_files_url());
+}
+
 void WebViewPanel::SendDesignStaffpick(bool on)
 {
     // if (on) {
@@ -550,6 +649,7 @@ int WebViewPanel::get_model_mall_detail_url(std::string *url, std::string id)
 void WebViewPanel::update_mode()
 {
     GetSizer()->Show(size_t(0), wxGetApp().app_config->get("internal_developer_mode") == "true");
+    update_subtab_ui();
     GetSizer()->Layout();
 }
 

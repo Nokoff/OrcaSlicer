@@ -373,6 +373,10 @@ void AppConfig::set_defaults()
         set("download_path", "");
     }
 
+    if (get("my_files_path").empty()) {
+        set("my_files_path", "");
+    }
+
     if (get("mouse_wheel").empty()) {
         set("mouse_wheel", "0");
     }

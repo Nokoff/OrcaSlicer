@@ -1,0 +1,28 @@
+@import url("../../homepage/css/dark.css");
+
+#MyFilesFolderPath {
+	color: #B3B3B5;
+}
+
+.MyFilesActionBtn {
+	border-color: #3E3E45;
+}
+
+.MyFilesActionBtn:hover {
+	background-color: #3E3E45;
+}
+
+.MyFilesPrimaryBtn {
+	border-color: #009688;
+	background-color: rgba(0, 150, 136, 0.2);
+	color: #efeff0;
+}
+
+#myfiles_context_menu {
+	background: #2b2b2f;
+	border-color: #3E3E45;
+}
+
+#myfiles_context_menu .CT_Item:hover {
+	background: #3E3E45;
+}

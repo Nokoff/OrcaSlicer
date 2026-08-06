@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="max-age=7200" />
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport" />
+<title>My Files</title>
+<link rel="stylesheet" type="text/css" href="../homepage/css/home.css" />
+<link rel="stylesheet" type="text/css" href="./css/myfiles.css" />
+<link rel="stylesheet" type="text/css" href="./css/dark.css" />
+
+<script type="text/javascript" src="../include/jquery-2.1.1.min.js"></script>
+<script type="text/javascript" src="../include/json2.js"></script>
+<script type="text/javascript" src="../include/globalapi.js"></script>
+<script type="text/javascript" src="../data/text.js"></script>
+<script type="text/javascript" src="js/myfiles.js"></script>
+</head>
+<body class="ZScrol" onLoad="OnInit()">
+<div id="RightBoard">
+<div id="ContentBoard" class="ZScrol">
+	<div style="height: 14px;"></div>
+
+	<div id="MyFilesHeader">
+		<div id="MyFilesTitleBlock">
+			<div id="MyFilesTitle" class="Content-Title trans TextS1" tid="t_mf1">My Files</div>
+			<div id="MyFilesFolderPath" class="TextS2" title=""></div>
+		</div>
+		<div id="MyFilesActions">
+			<div id="MyFilesRefreshBtn" class="MyFilesActionBtn trans TextS1" tid="t_mf8" onClick="OnRefreshMyFiles()">Refresh</div>
+			<div id="MyFilesChangeFolderBtn" class="MyFilesActionBtn trans TextS1" tid="t_mf3" onClick="OnChangeMyFilesFolder()">Change Folder</div>
+			<div id="MyFilesChooseFolderBtn" class="MyFilesActionBtn MyFilesPrimaryBtn trans TextS1" tid="t_mf2" onClick="OnSelectMyFilesFolder()">Choose Folder</div>
+		</div>
+	</div>
+
+	<div id="MyFilesEmptyState">
+		<div id="MyFilesEmptyIcon"></div>
+		<div id="MyFilesEmptyTitle" class="Content-Title TextS1 trans" tid="t_mf4">No folder mapped</div>
+		<div id="MyFilesEmptyDesc" class="TextS2 trans" tid="t_mf5">Select a folder to browse your local models and projects.</div>
+		<div id="MyFilesEmptyChooseBtn" class="MenuItem" onClick="OnSelectMyFilesFolder()">
+			<div class="MenuIcon"><img src="../homepage/img/open_folder.svg" onerror="this.style.display='none'"/></div>
+			<div>
+				<div class="trans TextS1" tid="t_mf2">Choose Folder</div>
+				<div class="MenuDesc trans" tid="t_mf5">Select a folder to browse your local models and projects.</div>
+			</div>
+		</div>
+	</div>
+
+	<div id="MyFilesEmptyList" style="display:none;">
+		<div class="Content-Title TextS1 trans" tid="t_mf6">No supported files found in this folder.</div>
+	</div>
+
+	<div id="RecentFileArea">
+		<div id="FileList"></div>
+	</div>
+
+	<div id="myfiles_context_menu">
+		<div id="CT_Folder_Bar" class="CT_Item" onClick="OnExploreMyFile()">
+			<div class="CT_Icon CT_Explore"></div>
+			<div class="CT_Text trans" tid="t_mf7">Open Containing Folder</div>
+		</div>
+	</div>
+
+	<div style="height: 14px;"></div>
+</div>
+</div>
+</body>
+<script type="text/javascript">
+	window.addEventListener('mousewheel', function (event) {
+		if (event.ctrlKey === true || event.metaKey) {
+			event.preventDefault();
+		}
+	}, { passive: false });
+</script>
+</html>

@@ -1,0 +1,110 @@
+body {
+	display: block;
+}
+
+#ContentBoard {
+	padding: 0px 40px;
+}
+
+#MyFilesHeader {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 6px 0 16px 0;
+	flex-wrap: wrap;
+}
+
+#MyFilesTitleBlock {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 200px;
+	flex: 1;
+}
+
+#MyFilesFolderPath {
+	font-size: 13px;
+	color: #A8A8A8;
+	max-width: 720px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+#MyFilesActions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.MyFilesActionBtn {
+	border-width: 1px;
+	border-style: solid;
+	border-color: #D7D7D7;
+	padding: 0px 12px;
+	border-radius: 6px;
+	line-height: 28px;
+	height: 28px;
+	cursor: pointer;
+	user-select: none;
+}
+
+.MyFilesActionBtn:hover {
+	background-color: #CDCECE;
+}
+
+.MyFilesPrimaryBtn {
+	border-color: #009688;
+	background-color: #E5F0EE;
+	color: #00695c;
+}
+
+.MyFilesPrimaryBtn:hover {
+	background-color: #BFE1DE;
+}
+
+#MyFilesEmptyState {
+	display: none;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 24px 0;
+}
+
+#MyFilesEmptyDesc {
+	max-width: 520px;
+	line-height: 22px;
+}
+
+#MyFilesEmptyChooseBtn {
+	margin-top: 8px;
+}
+
+#MyFilesEmptyList {
+	padding: 24px 0;
+}
+
+#myfiles_context_menu {
+	position: absolute;
+	display: none;
+	z-index: 100;
+	background: #fff;
+	border: 1px solid #D7D7D7;
+	border-radius: 8px;
+	box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+	padding: 4px 0;
+	min-width: 180px;
+}
+
+#myfiles_context_menu .CT_Item {
+	display: flex;
+	align-items: center;
+	padding: 8px 14px;
+	cursor: pointer;
+}
+
+#myfiles_context_menu .CT_Item:hover {
+	background: #E5F0EE;
+}
