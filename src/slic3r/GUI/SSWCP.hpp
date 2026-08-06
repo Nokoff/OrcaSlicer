@@ -591,12 +591,6 @@ private:
     void sw_DeleteRecentFiles();
 
     void sw_SubscribeRecentFiles();
-
-    void sw_GetMyFiles();
-
-    void sw_SelectMyFilesFolder();
-
-    void sw_OpenMyFile();
 };
 
 // Main SSWCP class for managing communication instances

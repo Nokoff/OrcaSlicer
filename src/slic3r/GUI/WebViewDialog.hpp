@@ -106,22 +106,13 @@ public:
     int  get_model_mall_detail_url(std::string *url, std::string id);
 
     void update_mode();
-    void show_home_page();
-    void show_my_files_page();
-    bool is_my_files_page() const { return m_showing_my_files; }
 
     wxWebView* getWebView() { return m_browser; }
 
 private:
     wxString make_home_url() const;
-    wxString make_my_files_url() const;
-    void     update_subtab_ui();
 
     wxWebView* m_browser;
-    wxPanel*   m_subtab_bar{nullptr};
-    wxButton*  m_btn_home{nullptr};
-    wxButton*  m_btn_my_files{nullptr};
-    bool       m_showing_my_files{false};
     wxBoxSizer *bSizer_toolbar;
     wxButton *  m_button_back;
     wxButton *  m_button_forward;

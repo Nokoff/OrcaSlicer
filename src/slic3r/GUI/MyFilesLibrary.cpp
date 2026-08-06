@@ -136,6 +136,29 @@ bool MyFilesLibrary::is_supported_model_file(const std::string &path)
     return supported_extensions().count(ext) > 0;
 }
 
+bool MyFilesLibrary::is_file_in_library(const std::string &path)
+{
+    const std::string folder = get_folder_path();
+    if (folder.empty() || !is_supported_model_file(path))
+        return false;
+
+    boost::system::error_code ec;
+    const fs::path root = fs::canonical(fs::path(folder), ec);
+    if (ec)
+        return false;
+    const fs::path file = fs::canonical(fs::path(path), ec);
+    if (ec || !fs::is_regular_file(file, ec) || ec)
+        return false;
+
+    auto root_it = root.begin();
+    auto file_it = file.begin();
+    for (; root_it != root.end(); ++root_it, ++file_it) {
+        if (file_it == file.end() || *root_it != *file_it)
+            return false;
+    }
+    return true;
+}
+
 void MyFilesLibrary::collect_files(nlohmann::json &out, int images)
 {
     out = nlohmann::json::array();

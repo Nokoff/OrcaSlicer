@@ -8,7 +8,7 @@ class wxWindow;
 namespace Slic3r {
 namespace GUI {
 
-// Local folder library shown as the "My Files" home sub-tab.
+// Local folder library shown from the "My Files" home navigation item.
 // Folder path is persisted in AppConfig key "my_files_path".
 class MyFilesLibrary
 {
@@ -24,6 +24,7 @@ public:
     static void collect_files(nlohmann::json &out, int images);
 
     static bool is_supported_model_file(const std::string &path);
+    static bool is_file_in_library(const std::string &path);
 };
 
 } // namespace GUI

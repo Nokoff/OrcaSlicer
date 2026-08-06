@@ -15,6 +15,7 @@
 
 #include "slic3r/GUI/SSWCP.hpp"
 #include "slic3r/GUI/DownloadManager.hpp"
+#include "slic3r/GUI/MyFilesLibrary.hpp"
 #include "slic3r/Utils/PresetUpdater.hpp"
 #include "slic3r/Utils/MoonRaker.hpp"
 #include "slic3r/Utils/MQTT.hpp"
@@ -4480,6 +4481,32 @@ std::string GUI_App::handle_web_request(std::string cmd)
                 if (mainframe) {
                     if (mainframe->m_webview) {
                         mainframe->m_webview->SendRecentList(INT_MAX);
+                    }
+                }
+            }
+            else if (command_str == "get_my_files") {
+                if (mainframe && mainframe->m_webview)
+                    mainframe->m_webview->SendMyFilesList(INT_MAX);
+            }
+            else if (command_str == "myfiles_select_folder" || command_str == "myfiles_change_folder") {
+                CallAfter([this] {
+                    if (mainframe && MyFilesLibrary::select_folder(mainframe) && mainframe->m_webview)
+                        mainframe->m_webview->SendMyFilesList(INT_MAX);
+                });
+            }
+            else if (command_str == "myfiles_open_file") {
+                if (root.get_child_optional("data") != boost::none) {
+                    const auto path = root.get_child("data").get_optional<std::string>("path");
+                    if (path && MyFilesLibrary::is_file_in_library(*path))
+                        request_open_project(*path);
+                }
+            }
+            else if (command_str == "myfiles_explore_file") {
+                if (root.get_child_optional("data") != boost::none) {
+                    const auto path = root.get_child("data").get_optional<std::string>("path");
+                    if (path && MyFilesLibrary::is_file_in_library(*path)) {
+                        boost::filesystem::path file_path(*path);
+                        desktop_open_any_folder(file_path.make_preferred().string());
                     }
                 }
             }

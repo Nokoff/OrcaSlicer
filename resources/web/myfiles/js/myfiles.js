@@ -4,6 +4,15 @@ var MousePosY = 0;
 var sImages = {};
 var m_FolderPath = '';
 
+function SendMyFilesMessage(message)
+{
+	if (window.parent && window.parent !== window && window.parent.sendMessage) {
+		window.parent.sendMessage(message);
+		return;
+	}
+	SendWXMessage(message);
+}
+
 function OnInit()
 {
 	TranslatePage();
@@ -43,7 +52,7 @@ function SendMsg_GetMyFiles()
 	var tSend = {};
 	tSend['sequence_id'] = Math.round(new Date() / 1000);
 	tSend['command'] = "get_my_files";
-	SendWXMessage(JSON.stringify(tSend));
+	SendMyFilesMessage(JSON.stringify(tSend));
 }
 
 function OnSelectMyFilesFolder()
@@ -51,7 +60,7 @@ function OnSelectMyFilesFolder()
 	var tSend = {};
 	tSend['sequence_id'] = Math.round(new Date() / 1000);
 	tSend['command'] = "myfiles_select_folder";
-	SendWXMessage(JSON.stringify(tSend));
+	SendMyFilesMessage(JSON.stringify(tSend));
 }
 
 function OnChangeMyFilesFolder()
@@ -59,7 +68,7 @@ function OnChangeMyFilesFolder()
 	var tSend = {};
 	tSend['sequence_id'] = Math.round(new Date() / 1000);
 	tSend['command'] = "myfiles_change_folder";
-	SendWXMessage(JSON.stringify(tSend));
+	SendMyFilesMessage(JSON.stringify(tSend));
 }
 
 function OnRefreshMyFiles()
@@ -74,7 +83,7 @@ function OnOpenMyFile(strPath)
 	tSend['command'] = "myfiles_open_file";
 	tSend['data'] = {};
 	tSend['data']['path'] = decodeURI(strPath);
-	SendWXMessage(JSON.stringify(tSend));
+	SendMyFilesMessage(JSON.stringify(tSend));
 }
 
 function OnExploreMyFile()
@@ -84,7 +93,7 @@ function OnExploreMyFile()
 	tSend['command'] = "myfiles_explore_file";
 	tSend['data'] = {};
 	tSend['data']['path'] = decodeURI(RightBtnFilePath);
-	SendWXMessage(JSON.stringify(tSend));
+	SendMyFilesMessage(JSON.stringify(tSend));
 	$("#myfiles_context_menu").hide();
 }
 

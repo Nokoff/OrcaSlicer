@@ -92,6 +92,45 @@
         console.log('i dont find window.wx, so i simulate a return by postMessage')
       }
     }
+
+    // My Files is rendered over the home content area so the Flutter sidebar
+    // remains visible and behaves like the other home navigation destinations.
+    window.showMyFilesOverlay = function () {
+      let frame = document.getElementById('my-files-frame');
+      if (!frame) {
+        frame = document.createElement('iframe');
+        frame.id = 'my-files-frame';
+        frame.title = 'My Files';
+        const language = new URLSearchParams(window.location.search).get('lang') || 'en';
+        frame.src = '/web/myfiles/index.html?lang=' + encodeURIComponent(language);
+        Object.assign(frame.style, {
+          position: 'fixed',
+          left: '262px',
+          top: '0',
+          right: '0',
+          bottom: '0',
+          width: 'calc(100% - 262px)',
+          height: '100%',
+          border: '0',
+          zIndex: '1000',
+          background: '#fff'
+        });
+        document.body.appendChild(frame);
+      }
+      frame.style.display = 'block';
+    };
+
+    window.hideMyFilesOverlay = function () {
+      const frame = document.getElementById('my-files-frame');
+      if (frame) frame.style.display = 'none';
+    };
+
+    window.dispatchMyFilesMessage = function (message) {
+      const frame = document.getElementById('my-files-frame');
+      if (frame && frame.contentWindow && frame.contentWindow.HandleStudio) {
+        frame.contentWindow.HandleStudio(message);
+      }
+    };
   </script>
 </body>
 </html>
