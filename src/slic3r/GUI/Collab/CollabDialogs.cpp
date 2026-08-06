@@ -12,8 +12,8 @@
 #include "CollabSession.hpp"
 
 #include "libslic3r/format.hpp"
-#include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
+#include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/NotificationManager.hpp"
 #include "slic3r/GUI/Plater.hpp"
 

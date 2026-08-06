@@ -85,6 +85,9 @@ public:
     // bypass the scene edit lock.
     bool is_applying_project() const { return m_applying_project; }
 
+    // Deterministic per-user color (shared palette on all peers).
+    static ColorRGBA user_color_for_id(int user_id);
+
 private:
     friend class CollabSessionManager;
 
@@ -125,8 +128,6 @@ private:
     void add_user(const User &user);
     void remove_user(int user_id);
     void end_session_with_notice(const std::string &reason);
-
-    static ColorRGBA user_color_for_id(int user_id);
 
     Role        m_role;
     std::string m_token;
