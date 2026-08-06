@@ -30,6 +30,8 @@ set(lisbslic3r_sources
     AnyPtr.hpp
     AppConfig.cpp
     AppConfig.hpp
+    SecretStore.cpp
+    SecretStore.hpp
     Arachne/BeadingStrategy/BeadingStrategy.cpp
     Arachne/BeadingStrategy/BeadingStrategyFactory.cpp
     Arachne/BeadingStrategy/BeadingStrategyFactory.hpp
@@ -607,7 +609,7 @@ if (TARGET OpenVDB::openvdb)
 endif()
 
 if(WIN32)
-    target_link_libraries(libslic3r PRIVATE Psapi.lib)
+    target_link_libraries(libslic3r PRIVATE Psapi.lib Crypt32.lib)
 endif()
 
 if(SLIC3R_PROFILE)

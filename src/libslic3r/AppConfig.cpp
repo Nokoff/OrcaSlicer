@@ -5,6 +5,7 @@
 #include "Preset.hpp"
 #include "Exception.hpp"
 #include "LocalesUtils.hpp"
+#include "SecretStore.hpp"
 #include "Thread.hpp"
 #include "format.hpp"
 #include "nlohmann/json.hpp"
@@ -703,6 +704,11 @@ std::string AppConfig::load()
         // SM Orca
         if (j.contains("devices")) {
             m_device_list = j["devices"].get<std::vector<DeviceInfo>>();
+            for (DeviceInfo &device : m_device_list) {
+                device.cert     = decrypt_secret(device.cert);
+                device.key      = decrypt_secret(device.key);
+                device.password = decrypt_secret(device.password);
+            }
         }
     } catch(std::exception err) {
         BOOST_LOG_TRIVIAL(info) << format("parse app config \"%1%\", error: %2%", AppConfig::loading_path(), err.what());
@@ -883,6 +889,9 @@ void AppConfig::save()
 
     for (size_t i = 0; i < j["devices"].size(); ++i) {
         j["devices"][i]["connected"] = false;
+        // The printer credentials must never reach the config file unprotected.
+        for (const char *field : {"cert", "key", "password"})
+            j["devices"][i][field] = encrypt_secret(j["devices"][i].value(field, std::string()));
     }
     for (const auto& local_machine : m_local_machines) {
         json m_json;

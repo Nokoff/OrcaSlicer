@@ -34,6 +34,7 @@
 #include <atomic>
 #include <mutex>
 #include <stack>
+#include <thread>
 #include <unordered_map>
 //#define BBL_HAS_FIRST_PAGE          1
 #define STUDIO_INACTIVE_TIMEOUT     15*60*1000
@@ -897,6 +898,14 @@ public:
     void sm_auto_connect_primary_device();
     // Establish an MQTT session for a saved DeviceInfo (may run off the UI thread).
     bool sm_connect_to_device(const DeviceInfo &device, DynamicPrintConfig config, bool reload_device_view = true);
+    // Stop a pending auto-connect and wait for its worker, so shutdown cannot race it.
+    void sm_stop_auto_connect();
+
+private:
+    std::thread       m_auto_connect_thread;
+    std::atomic<bool> m_auto_connect_abort{false};
+
+public:
 
 
 public:

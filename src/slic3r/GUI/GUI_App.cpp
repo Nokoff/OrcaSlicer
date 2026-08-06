@@ -2476,6 +2476,8 @@ bool GUI_App::OnInit()
 
 int GUI_App::OnExit()
 {
+    sm_stop_auto_connect();
+
     stop_sync_user_preset();
 
     if (m_device_manager) {
@@ -7511,100 +7513,109 @@ bool GUI_App::sm_disconnect_current_machine(bool need_reload_printerview)
     return true;
 }
 
+// A saved printer can be reconnected without the user when its LAN pairing
+// certificates were kept. Cloud sessions issue short-lived credentials that the
+// device page has to negotiate again, so they are left alone.
+static bool sm_device_can_auto_connect(const DeviceInfo &d, std::string &reason)
+{
+    if (d.link_mode == "wan") {
+        reason = "cloud device, needs the device page to authorise";
+        return false;
+    }
+    if (d.protocol != 0 && d.protocol != int(PrintHostType::htMoonRaker_mqtt)) {
+        reason = "not an MQTT printer";
+        return false;
+    }
+    if (d.ip.empty()) {
+        reason = "no saved address";
+        return false;
+    }
+    if (d.sn.empty() && d.dev_id.empty()) {
+        reason = "no saved serial number";
+        return false;
+    }
+    if (d.ca.empty() || d.cert.empty() || d.key.empty()) {
+        reason = "no stored certificates, connect once from the device page";
+        return false;
+    }
+    return true;
+}
+
 void GUI_App::sm_auto_connect_primary_device()
 {
     if (!app_config || !preset_bundle || !mainframe)
         return;
 
-    DeviceInfo info;
+    DeviceInfo        info;
+    std::string       reason;
     const std::string last_id = app_config->get("last_connected_dev_id");
     if (!last_id.empty()) {
         if (!app_config->get_device_info(last_id, info)) {
-            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: device not found: " << last_id;
+            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: last used printer is no longer saved";
             return;
         }
     } else {
-        // No remembered device yet: if My Devices has exactly one MQTT printer, use it.
+        // Nothing remembered yet: fall back to a single reconnectable printer.
         std::vector<DeviceInfo> candidates;
         for (const auto &d : app_config->get_devices()) {
-            if (d.ip.empty() || d.clientId.empty())
-                continue;
-            if (d.protocol != 0 && d.protocol != int(PrintHostType::htMoonRaker_mqtt))
-                continue;
-            candidates.push_back(d);
+            if (sm_device_can_auto_connect(d, reason))
+                candidates.push_back(d);
         }
         if (candidates.size() != 1) {
-            BOOST_LOG_TRIVIAL(info) << "Auto-connect: no last connected device";
+            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: skipped, " << candidates.size() << " reconnectable printers saved";
             return;
         }
         info = candidates.front();
-        BOOST_LOG_TRIVIAL(info) << "Auto-connect: using sole My Devices printer " << info.dev_id;
     }
 
-    if (info.ip.empty() || info.clientId.empty()) {
-        BOOST_LOG_TRIVIAL(warning) << "Auto-connect: missing IP or clientId for " << info.dev_id;
+    if (!sm_device_can_auto_connect(info, reason)) {
+        BOOST_LOG_TRIVIAL(warning) << "Auto-connect: skipped " << info.dev_name << " (" << reason << ")";
         return;
     }
 
-    // Only reconnect Snapmaker MQTT devices from My Devices.
-    if (info.protocol != 0 && info.protocol != int(PrintHostType::htMoonRaker_mqtt)) {
-        BOOST_LOG_TRIVIAL(info) << "Auto-connect: skipping non-MQTT device " << info.dev_id;
-        return;
-    }
-
-    // Refresh LAN IPs in parallel; connect uses the latest saved IP below.
+    // Refresh LAN addresses in parallel; the worker below picks up the newest one.
     machine_find();
 
-    // Copy printer config on the UI thread; MQTT connect runs in the background.
+    // The printer config must be copied here, on the UI thread.
     DynamicPrintConfig config = preset_bundle->printers.get_edited_preset().config;
-    std::thread([this, info, config]() mutable {
-        // Brief wait so mDNS can update a changed DHCP address before we connect.
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    sm_stop_auto_connect();
+    m_auto_connect_abort = false;
+    m_auto_connect_thread = std::thread([this, info, config]() mutable {
+        // Give mDNS a moment to report a new DHCP address before connecting.
+        for (int i = 0; i < 20 && !m_auto_connect_abort; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (m_auto_connect_abort)
+            return;
 
         DeviceInfo fresh = info;
-        if (app_config)
-            app_config->get_device_info(info.dev_id, fresh);
+        app_config->get_device_info(info.dev_id, fresh);
+        if (fresh.ip.empty())
+            fresh = info;
 
-        BOOST_LOG_TRIVIAL(info) << "Auto-connect: connecting to " << fresh.dev_id << " @ " << fresh.ip;
-        if (!sm_connect_to_device(fresh, std::move(config), true)) {
-            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: failed for " << fresh.dev_id;
-        }
-    }).detach();
+        BOOST_LOG_TRIVIAL(warning) << "Auto-connect: connecting to " << fresh.dev_name << " at " << fresh.ip;
+        if (!sm_connect_to_device(fresh, std::move(config), true))
+            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: failed to reach " << fresh.ip;
+    });
+}
+
+void GUI_App::sm_stop_auto_connect()
+{
+    m_auto_connect_abort = true;
+    if (m_auto_connect_thread.joinable())
+        m_auto_connect_thread.join();
 }
 
 bool GUI_App::sm_connect_to_device(const DeviceInfo &device, DynamicPrintConfig config, bool reload_device_view)
 {
     try {
-        if (device.ip.empty() || device.clientId.empty())
+        const std::string sn = !device.sn.empty() ? device.sn : device.dev_id;
+        if (device.ip.empty() || sn.empty())
+            return false;
+        if (device.ca.empty() || device.cert.empty() || device.key.empty())
             return false;
 
-        std::string sn = !device.sn.empty() ? device.sn : device.dev_id;
-        if (sn.empty())
-            sn = device.ip;
-
-        int port = device.port;
-        if (port <= 0 || port == 1883)
-            port = 1884;
-
-        std::shared_ptr<MqttClient> client;
-        const bool                  has_tls = !device.ca.empty() && !device.cert.empty() && !device.key.empty();
-        if (has_tls) {
-            const std::string server = "mqtts://" + device.ip + ":" + std::to_string(port);
-            client.reset(new MqttClient(server, device.clientId, device.ca, device.cert, device.key, device.user,
-                                        device.password, false));
-        } else {
-            const std::string server = "mqtt://" + device.ip + ":" + std::to_string(port);
-            client.reset(new MqttClient(server, device.clientId, device.user, device.password, false));
-        }
-
-        if (!client)
-            return false;
-
-        std::string connect_msg;
-        if (!client->Connect(connect_msg)) {
-            BOOST_LOG_TRIVIAL(error) << "Auto-connect: MQTT Connect failed: " << connect_msg;
-            return false;
-        }
+        const int port = device.port > 0 ? device.port : 8883;
 
         if (auto *host_type_opt = config.option<ConfigOptionEnum<PrintHostType>>("host_type"))
             host_type_opt->value = PrintHostType::htMoonRaker_mqtt;
@@ -7615,28 +7626,23 @@ bool GUI_App::sm_connect_to_device(const DeviceInfo &device, DynamicPrintConfig 
         if (!host)
             return false;
 
-        std::string engine_msg;
-        if (!host->set_engine(client, engine_msg)) {
-            BOOST_LOG_TRIVIAL(error) << "Auto-connect: set_engine failed: " << engine_msg;
+        // Reuse the regular connect path so TLS setup, topic subscriptions and time
+        // sync end up identical to a connection made from the device page.
+        json params;
+        params["sn"]       = sn;
+        params["ca"]       = device.ca;
+        params["cert"]     = device.cert;
+        params["key"]      = device.key;
+        params["port"]     = port;
+        params["clientId"] = device.clientId;
+        params["user"]     = device.user;
+        params["password"] = device.password;
+
+        wxString connect_msg;
+        if (!host->connect(connect_msg, params)) {
+            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: MQTT connect failed: " << connect_msg.ToStdString();
             return false;
         }
-
-        host->m_sn_mtx.lock();
-        host->m_sn = sn;
-        host->m_sn_mtx.unlock();
-        host->m_user_name = device.user;
-        host->m_password  = device.password;
-        host->m_ca        = device.ca;
-        host->m_cert      = device.cert;
-        host->m_key       = device.key;
-        host->m_client_id = device.clientId;
-        host->m_port      = port;
-
-        // Match Moonraker_Mqtt::connect() subscriptions so RPC / status work after set_engine.
-        std::string sub_msg;
-        client->Subscribe(sn + "/response", 1, sub_msg);
-        client->Subscribe(sn + "/notification", 1, sub_msg);
-        client->Subscribe(sn + "/status", 1, sub_msg);
 
         host->set_connection_lost([]() {
             wxGetApp().CallAfter([]() {
@@ -7745,7 +7751,7 @@ bool GUI_App::sm_connect_to_device(const DeviceInfo &device, DynamicPrintConfig 
                 }
             }
 
-            BOOST_LOG_TRIVIAL(info) << "Auto-connect: connected to " << stored.dev_id;
+            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: connected to " << stored.dev_name;
         });
 
         return true;

@@ -5867,9 +5867,13 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
 
                                         auto auth_info = host->get_auth_info();
                                         try {
-                                            info.ca       = /* auth_info["ca"]*/ "";
-                                            info.cert     = /* auth_info["cert"]*/ "";
-                                            info.key      = /* auth_info["key"]*/ "";
+                                            // LAN certificates keep working across restarts, so storing them lets the
+                                            // next launch reconnect without asking for the pairing code again. Cloud
+                                            // sessions get short-lived credentials that are not worth keeping.
+                                            const bool lan_device = link_mode != "wan";
+                                            info.ca       = lan_device ? auth_info["ca"].get<std::string>() : "";
+                                            info.cert     = lan_device ? auth_info["cert"].get<std::string>() : "";
+                                            info.key      = lan_device ? auth_info["key"].get<std::string>() : "";
                                             info.user     = auth_info["user"];
                                             info.password = auth_info["password"];
                                             info.port     = auth_info["port"];
@@ -5881,6 +5885,16 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
                                         if (nozzle_diameters.empty()) {
                                             if (exist) {
                                                 query_info.connected = true;
+                                                // Refresh the session details so a later restart can reconnect on its own.
+                                                query_info.ip        = info.ip;
+                                                query_info.ca        = info.ca;
+                                                query_info.cert      = info.cert;
+                                                query_info.key       = info.key;
+                                                query_info.user      = info.user;
+                                                query_info.password  = info.password;
+                                                query_info.port      = info.port;
+                                                query_info.clientId  = info.clientId;
+                                                query_info.link_mode = info.link_mode;
                                                 wxGetApp().app_config->save_device_info(query_info);
                                             } else {
                                                 wxGetApp().app_config->save_device_info(info);
