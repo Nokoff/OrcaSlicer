@@ -4381,6 +4381,7 @@ void SSWCP_MachineConnect_Instance::sw_disconnect() {
 
 
 
+        wxGetApp().app_config->set("last_connected_dev_id", "");
         bool res = wxGetApp().sm_disconnect_current_machine(need_reload);
         m_first_connected = true;
         if (!res) {
@@ -6086,6 +6087,12 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
                                     }
 
                                     wxGetApp().app_config->set("use_new_connect", "true");
+                                    for (const auto &d : devices) {
+                                        if (d.connected) {
+                                            wxGetApp().app_config->set("last_connected_dev_id", d.dev_id);
+                                            break;
+                                        }
+                                    }
                                     wxGetApp().mainframe->plater()->sidebar().update_all_preset_comboboxes(reload_device_view);
                                     wxGetApp().mainframe->m_print_enable = true;
                                     wxGetApp().mainframe->update_slice_print_status(MainFrame::eEventPlateUpdate);

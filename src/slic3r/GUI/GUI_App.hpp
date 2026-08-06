@@ -68,6 +68,7 @@ namespace GUI {
 namespace Slic3r {
 
 class AppConfig;
+struct DeviceInfo;
 class PresetBundle;
 class PresetUpdater;
 class ModelObject;
@@ -892,6 +893,10 @@ public:
 
 public:
     bool sm_disconnect_current_machine(bool need_reload_printerview = true);
+    // Reconnect the last-used My Devices printer after app startup.
+    void sm_auto_connect_primary_device();
+    // Establish an MQTT session for a saved DeviceInfo (may run off the UI thread).
+    bool sm_connect_to_device(const DeviceInfo &device, DynamicPrintConfig config, bool reload_device_view = true);
 
 
 public:

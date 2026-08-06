@@ -16,6 +16,8 @@
 #include "slic3r/GUI/SSWCP.hpp"
 #include "slic3r/GUI/DownloadManager.hpp"
 #include "slic3r/Utils/PresetUpdater.hpp"
+#include "slic3r/Utils/MoonRaker.hpp"
+#include "slic3r/Utils/MQTT.hpp"
 #include "slic3r/Config/Version.hpp"
 #include "libslic3r/MixedFilament.hpp"
 
@@ -1191,6 +1193,11 @@ void GUI_App::post_init()
 
 
     DeviceManager::load_filaments_blacklist_config();
+
+    // Auto-reconnect the last My Devices printer so print is ready without a manual connect.
+    CallAfter([this] {
+        sm_auto_connect_primary_device();
+    });
 
     // remove old log files over LOG_FILES_MAX_NUM
     std::string log_addr = data_dir();
@@ -7475,6 +7482,250 @@ bool GUI_App::sm_disconnect_current_machine(bool need_reload_printerview)
     }
 
     return true;
+}
+
+void GUI_App::sm_auto_connect_primary_device()
+{
+    if (!app_config || !preset_bundle || !mainframe)
+        return;
+
+    DeviceInfo info;
+    const std::string last_id = app_config->get("last_connected_dev_id");
+    if (!last_id.empty()) {
+        if (!app_config->get_device_info(last_id, info)) {
+            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: device not found: " << last_id;
+            return;
+        }
+    } else {
+        // No remembered device yet: if My Devices has exactly one MQTT printer, use it.
+        std::vector<DeviceInfo> candidates;
+        for (const auto &d : app_config->get_devices()) {
+            if (d.ip.empty() || d.clientId.empty())
+                continue;
+            if (d.protocol != 0 && d.protocol != int(PrintHostType::htMoonRaker_mqtt))
+                continue;
+            candidates.push_back(d);
+        }
+        if (candidates.size() != 1) {
+            BOOST_LOG_TRIVIAL(info) << "Auto-connect: no last connected device";
+            return;
+        }
+        info = candidates.front();
+        BOOST_LOG_TRIVIAL(info) << "Auto-connect: using sole My Devices printer " << info.dev_id;
+    }
+
+    if (info.ip.empty() || info.clientId.empty()) {
+        BOOST_LOG_TRIVIAL(warning) << "Auto-connect: missing IP or clientId for " << info.dev_id;
+        return;
+    }
+
+    // Only reconnect Snapmaker MQTT devices from My Devices.
+    if (info.protocol != 0 && info.protocol != int(PrintHostType::htMoonRaker_mqtt)) {
+        BOOST_LOG_TRIVIAL(info) << "Auto-connect: skipping non-MQTT device " << info.dev_id;
+        return;
+    }
+
+    // Refresh LAN IPs in parallel; connect uses the latest saved IP below.
+    machine_find();
+
+    // Copy printer config on the UI thread; MQTT connect runs in the background.
+    DynamicPrintConfig config = preset_bundle->printers.get_edited_preset().config;
+    std::thread([this, info, config]() mutable {
+        // Brief wait so mDNS can update a changed DHCP address before we connect.
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+
+        DeviceInfo fresh = info;
+        if (app_config)
+            app_config->get_device_info(info.dev_id, fresh);
+
+        BOOST_LOG_TRIVIAL(info) << "Auto-connect: connecting to " << fresh.dev_id << " @ " << fresh.ip;
+        if (!sm_connect_to_device(fresh, std::move(config), true)) {
+            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: failed for " << fresh.dev_id;
+        }
+    }).detach();
+}
+
+bool GUI_App::sm_connect_to_device(const DeviceInfo &device, DynamicPrintConfig config, bool reload_device_view)
+{
+    try {
+        if (device.ip.empty() || device.clientId.empty())
+            return false;
+
+        std::string sn = !device.sn.empty() ? device.sn : device.dev_id;
+        if (sn.empty())
+            sn = device.ip;
+
+        int port = device.port;
+        if (port <= 0 || port == 1883)
+            port = 1884;
+
+        std::shared_ptr<MqttClient> client;
+        const bool                  has_tls = !device.ca.empty() && !device.cert.empty() && !device.key.empty();
+        if (has_tls) {
+            const std::string server = "mqtts://" + device.ip + ":" + std::to_string(port);
+            client.reset(new MqttClient(server, device.clientId, device.ca, device.cert, device.key, device.user,
+                                        device.password, false));
+        } else {
+            const std::string server = "mqtt://" + device.ip + ":" + std::to_string(port);
+            client.reset(new MqttClient(server, device.clientId, device.user, device.password, false));
+        }
+
+        if (!client)
+            return false;
+
+        std::string connect_msg;
+        if (!client->Connect(connect_msg)) {
+            BOOST_LOG_TRIVIAL(error) << "Auto-connect: MQTT Connect failed: " << connect_msg;
+            return false;
+        }
+
+        if (auto *host_type_opt = config.option<ConfigOptionEnum<PrintHostType>>("host_type"))
+            host_type_opt->value = PrintHostType::htMoonRaker_mqtt;
+        config.set("print_host", device.ip + ":" + std::to_string(port));
+
+        std::shared_ptr<PrintHost>      tmp_host(PrintHost::get_print_host(&config));
+        std::shared_ptr<Moonraker_Mqtt> host = std::dynamic_pointer_cast<Moonraker_Mqtt>(tmp_host);
+        if (!host)
+            return false;
+
+        std::string engine_msg;
+        if (!host->set_engine(client, engine_msg)) {
+            BOOST_LOG_TRIVIAL(error) << "Auto-connect: set_engine failed: " << engine_msg;
+            return false;
+        }
+
+        host->m_sn_mtx.lock();
+        host->m_sn = sn;
+        host->m_sn_mtx.unlock();
+        host->m_user_name = device.user;
+        host->m_password  = device.password;
+        host->m_ca        = device.ca;
+        host->m_cert      = device.cert;
+        host->m_key       = device.key;
+        host->m_client_id = device.clientId;
+        host->m_port      = port;
+
+        // Match Moonraker_Mqtt::connect() subscriptions so RPC / status work after set_engine.
+        std::string sub_msg;
+        client->Subscribe(sn + "/response", 1, sub_msg);
+        client->Subscribe(sn + "/notification", 1, sub_msg);
+        client->Subscribe(sn + "/status", 1, sub_msg);
+
+        host->set_connection_lost([]() {
+            wxGetApp().CallAfter([]() {
+                SSWCP_Instance::m_first_connected = true;
+                wxGetApp().app_config->clear_filament_extruder_map();
+                wxGetApp().preset_bundle->machine_filaments.clear();
+                wxGetApp().load_current_presets();
+            });
+            wxGetApp().CallAfter([]() {
+                wxGetApp().app_config->set("use_new_connect", "false");
+                auto p_config = &(wxGetApp().preset_bundle->printers.get_edited_preset().config);
+                p_config->set("print_host", "");
+
+                std::shared_ptr<PrintHost> ptr = nullptr;
+                wxGetApp().get_connect_host(ptr);
+                if (ptr) {
+                    wxString disconn_msg = "";
+                    json     disconn_param;
+                    ptr->disconnect(disconn_msg, disconn_param);
+                }
+
+                wxGetApp().set_connect_host(nullptr);
+
+                auto devices = wxGetApp().app_config->get_devices();
+                for (size_t i = 0; i < devices.size(); ++i) {
+                    if (devices[i].connected) {
+                        devices[i].connected = false;
+                        wxGetApp().app_config->save_device_info(devices[i]);
+                        break;
+                    }
+                }
+
+                json param;
+                param["command"]    = "local_devices_arrived";
+                param["sequece_id"] = "10001";
+                param["data"]       = devices;
+                wxString strJS      = wxString::Format("window.postMessage(%s)", param.dump());
+                GUI::wxGetApp().run_script(strJS);
+                wxGetApp().device_card_notify(devices);
+
+                MessageDialog msg_window(nullptr,
+                                         " " + _L("Connection has been disconnected and recovery attempt failed. Please reconnect.") +
+                                             "\n",
+                                         _L("Machine Disconnected"), wxICON_QUESTION | wxOK);
+                msg_window.ShowModal();
+
+                wxGetApp().mainframe->plater()->sidebar().update_all_preset_comboboxes();
+            });
+        });
+
+        // Mark device connected and publish UI updates on the main thread.
+        DeviceInfo connected_info = device;
+        connected_info.connected  = true;
+        connected_info.sn         = sn;
+        connected_info.dev_id     = !device.dev_id.empty() ? device.dev_id : sn;
+        connected_info.port       = port;
+        connected_info.protocol   = int(PrintHostType::htMoonRaker_mqtt);
+
+        CallAfter([this, host, config, connected_info, reload_device_view]() {
+            // Clear other connected flags, then mark this device.
+            auto devices = app_config->get_devices();
+            for (auto &d : devices) {
+                if (d.connected && d.dev_id != connected_info.dev_id) {
+                    d.connected = false;
+                    app_config->save_device_info(d);
+                }
+            }
+
+            DeviceInfo stored = connected_info;
+            DeviceInfo existing;
+            if (app_config->get_device_info(connected_info.dev_id, existing)) {
+                stored               = existing;
+                stored.connected     = true;
+                stored.ip            = connected_info.ip;
+                stored.port          = connected_info.port;
+                stored.user          = connected_info.user.empty() ? existing.user : connected_info.user;
+                stored.password      = connected_info.password.empty() ? existing.password : connected_info.password;
+                stored.clientId      = connected_info.clientId.empty() ? existing.clientId : connected_info.clientId;
+            }
+            app_config->save_device_info(stored);
+            app_config->set("last_connected_dev_id", stored.dev_id);
+            app_config->set("use_new_connect", "true");
+
+            set_connect_host(host);
+            set_host_config(config);
+
+            devices = app_config->get_devices();
+            json param;
+            param["command"]    = "local_devices_arrived";
+            param["sequece_id"] = "10001";
+            param["data"]       = devices;
+            wxString strJS      = wxString::Format("window.postMessage(%s)", param.dump());
+            run_script(strJS);
+            device_card_notify(devices);
+
+            if (mainframe) {
+                mainframe->plater()->sidebar().update_all_preset_comboboxes(reload_device_view);
+                mainframe->m_print_enable = true;
+                mainframe->update_slice_print_status(MainFrame::eEventPlateUpdate);
+
+                if (mainframe->m_printer_view &&
+                    (!mainframe->m_printer_view->isSnapmakerPage() || reload_device_view)) {
+                    wxString url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(get_page_http_port()) +
+                                                      "/web/flutter_web/index.html?path=2");
+                    mainframe->load_printer_url(get_international_url(url));
+                }
+            }
+
+            BOOST_LOG_TRIVIAL(info) << "Auto-connect: connected to " << stored.dev_id;
+        });
+
+        return true;
+    } catch (const std::exception &e) {
+        BOOST_LOG_TRIVIAL(error) << "Auto-connect: exception: " << e.what();
+        return false;
+    }
 }
 
 void GUI_App::start_download(std::string url)
