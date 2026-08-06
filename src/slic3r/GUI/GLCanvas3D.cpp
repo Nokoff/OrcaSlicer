@@ -33,6 +33,7 @@
 #include "DailyTips.hpp"
 
 #include "slic3r/GUI/Gizmos/GLGizmoPainterBase.hpp"
+#include "slic3r/GUI/Collab/CollabSession.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
 #include "slic3r/Utils/MacDarkMode.hpp"
 
@@ -4728,6 +4729,13 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
     if (m_model == nullptr)
         return;
 
+    // Collaborative painting: scene transforms are frozen during a session.
+    if (Collab::CollabSessionManager::scene_locked_with_notice()) {
+        // Discard the interactive transform by rebuilding volumes from the model.
+        reload_scene(true, true);
+        return;
+    }
+
     if (!snapshot_type.empty())
         wxGetApp().plater()->take_snapshot(snapshot_type);
 
@@ -4837,6 +4845,12 @@ void GLCanvas3D::do_rotate(const std::string& snapshot_type)
     if (m_model == nullptr)
         return;
 
+    // Collaborative painting: scene transforms are frozen during a session.
+    if (Collab::CollabSessionManager::scene_locked_with_notice()) {
+        reload_scene(true, true);
+        return;
+    }
+
     if (!snapshot_type.empty())
         wxGetApp().plater()->take_snapshot(snapshot_type);
 
@@ -4930,6 +4944,12 @@ void GLCanvas3D::do_scale(const std::string& snapshot_type)
 {
     if (m_model == nullptr)
         return;
+
+    // Collaborative painting: scene transforms are frozen during a session.
+    if (Collab::CollabSessionManager::scene_locked_with_notice()) {
+        reload_scene(true, true);
+        return;
+    }
 
     if (!snapshot_type.empty())
         wxGetApp().plater()->take_snapshot(snapshot_type);
@@ -5038,6 +5058,12 @@ void GLCanvas3D::do_mirror(const std::string& snapshot_type)
 {
     if (m_model == nullptr)
         return;
+
+    // Collaborative painting: scene transforms are frozen during a session.
+    if (Collab::CollabSessionManager::scene_locked_with_notice()) {
+        reload_scene(true, true);
+        return;
+    }
 
     if (!snapshot_type.empty())
         wxGetApp().plater()->take_snapshot(snapshot_type);

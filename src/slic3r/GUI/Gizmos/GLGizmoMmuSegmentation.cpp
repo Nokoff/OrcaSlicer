@@ -10,6 +10,7 @@
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/NotificationManager.hpp"
 #include "slic3r/GUI/GUI.hpp"
+#include "slic3r/GUI/Collab/CollabSession.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Model.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
@@ -256,6 +257,7 @@ void GLGizmoMmuSegmentation::render_painter_gizmo()
     m_c->object_clipper()->render_cut();
     m_c->instances_hider()->render_cut();
     render_cursor();
+    render_collab_cursors();
 
     glsafe(::glDisable(GL_BLEND));
 }
@@ -1001,7 +1003,22 @@ void GLGizmoMmuSegmentation::update_model_object()
         wxGetApp().plater()->get_partplate_list().notify_instance_update(obj_idx, 0);
         m_parent.post_event(SimpleEvent(EVT_GLCANVAS_SCHEDULE_BACKGROUND_PROCESS));
         wxGetApp().plater()->notify_filament_usage_changed();
+
+        // Broadcast the changed paint state to collaboration peers. This also
+        // covers non-stroke updates such as the "reset selection" button.
+        if (Collab::CollabSession *collab = Collab::CollabSessionManager::get(); collab != nullptr)
+            collab->sync_paint_state();
     }
+}
+
+void GLGizmoMmuSegmentation::collab_update_volume(int vol_idx, const TriangleSelector::TriangleSplittingData &data)
+{
+    if (vol_idx < 0 || vol_idx >= int(m_triangle_selectors.size()))
+        return;
+    const EnforcerBlockerType max_ebt = (EnforcerBlockerType) std::min(m_extruders_colors.size(), (size_t) EnforcerBlockerType::ExtruderMax);
+    m_triangle_selectors[vol_idx]->deserialize(data, true, max_ebt);
+    m_triangle_selectors[vol_idx]->request_update_render_data(true);
+    m_parent.set_as_dirty();
 }
 
 void GLGizmoMmuSegmentation::init_model_triangle_selectors()

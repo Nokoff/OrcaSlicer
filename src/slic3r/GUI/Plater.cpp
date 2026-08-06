@@ -143,6 +143,7 @@
 #include "RemovableDriveManager.hpp"
 #include "InstanceCheck.hpp"
 #include "NotificationManager.hpp"
+#include "Collab/CollabSession.hpp"
 #include "PresetComboBoxes.hpp"
 #include "MsgDialog.hpp"
 #include "ProjectDirtyStateManager.hpp"
@@ -16377,6 +16378,12 @@ SLAPrint&       Plater::sla_print()         { return p->sla_print; }
 
 int Plater::new_project(bool skip_confirm, bool silent, const wxString& project_name)
 {
+    // Starting a new project ends any collaboration session (the shared
+    // scene is being replaced). Not triggered when a received collaboration
+    // project is being applied.
+    if (Collab::CollabSessionManager::scene_locked())
+        Collab::CollabSessionManager::stop();
+
     bool transfer_preset_changes = false;
     // BBS: save confirm
     auto check = [&transfer_preset_changes](bool yes_or_no) {
@@ -16454,6 +16461,10 @@ LoadType determine_load_type(std::string filename, std::string override_setting 
 void Plater::load_project(wxString const& filename2,
     wxString const& originfile)
 {
+    // Loading another project ends any collaboration session.
+    if (Collab::CollabSessionManager::scene_locked())
+        Collab::CollabSessionManager::stop();
+
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "filename is: " << filename2 << "and originfile is: " << originfile;
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__;
     auto filename = filename2;
@@ -16895,6 +16906,9 @@ bool Plater::up_to_date(bool saved, bool backup)
 
 void Plater::add_model(bool imperial_units, std::string fname)
 {
+    if (Collab::CollabSessionManager::scene_locked_with_notice())
+        return;
+
     wxArrayString input_files;
 
     std::vector<fs::path> paths;
@@ -18429,6 +18443,9 @@ void ProjectDropDialog::on_dpi_changed(const wxRect& suggested_rect)
 //BBS: remove GCodeViewer as seperate APP logic
 bool Plater::load_files(const wxArrayString& filenames)
 {
+    if (Collab::CollabSessionManager::scene_locked_with_notice())
+        return false;
+
     const std::regex pattern_drop(".*[.](stp|step|stl|oltp|obj|amf|3mf|svg|zip)", std::regex::icase);
     const std::regex pattern_gcode_drop(".*[.](gcode|g)", std::regex::icase);
 
@@ -18669,6 +18686,9 @@ int Plater::get_3mf_file_count(std::vector<fs::path> paths)
 
 void Plater::add_file()
 {
+    if (Collab::CollabSessionManager::scene_locked_with_notice())
+        return;
+
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " entry";
     wxArrayString input_files;
     wxGetApp().import_model(this, input_files);
@@ -18826,7 +18846,12 @@ void Plater::select_all() { p->select_all(); }
 void Plater::deselect_all() { p->deselect_all(); }
 void Plater::exit_gizmo() { p->exit_gizmo(); }
 
-void Plater::remove(size_t obj_idx) { p->remove(obj_idx); }
+void Plater::remove(size_t obj_idx)
+{
+    if (Collab::CollabSessionManager::scene_locked_with_notice())
+        return;
+    p->remove(obj_idx);
+}
 void Plater::reset(bool apply_presets_change) { p->reset(apply_presets_change); }
 void Plater::reset_with_confirm()
 {
@@ -18888,11 +18913,18 @@ void Plater::trigger_restore_project(int skip_confirm)
 }
 
 //BBS
-bool Plater::delete_object_from_model(size_t obj_idx, bool refresh_immediately) { return p->delete_object_from_model(obj_idx, refresh_immediately); }
+bool Plater::delete_object_from_model(size_t obj_idx, bool refresh_immediately)
+{
+    if (Collab::CollabSessionManager::scene_locked_with_notice())
+        return false;
+    return p->delete_object_from_model(obj_idx, refresh_immediately);
+}
 
 //BBS: delete all from model
 void Plater::delete_all_objects_from_model()
 {
+    if (Collab::CollabSessionManager::scene_locked_with_notice())
+        return;
     p->delete_all_objects_from_model();
 }
 
@@ -18912,6 +18944,8 @@ void Plater::set_selected_visible(bool visible)
 
 void Plater::remove_selected()
 {
+    if (Collab::CollabSessionManager::scene_locked_with_notice())
+        return;
     /*if (p->get_selection().is_empty())
         return;*/
     if (p->get_curr_selection().is_empty())
@@ -20666,8 +20700,20 @@ void Plater::single_snapshots_leave(SingleSnapshot *single)
 {
     p->single_snapshots_leave(single);
 }
-void Plater::undo() { p->undo(); }
-void Plater::redo() { p->redo(); }
+void Plater::undo()
+{
+    p->undo();
+    // Collaborative painting: broadcast local changes and restore remote
+    // users' paint that the undo may have reverted.
+    if (Collab::CollabSession *session = Collab::CollabSessionManager::get(); session != nullptr)
+        session->sync_paint_state();
+}
+void Plater::redo()
+{
+    p->redo();
+    if (Collab::CollabSession *session = Collab::CollabSessionManager::get(); session != nullptr)
+        session->sync_paint_state();
+}
 void Plater::undo_to(int selection)
 {
     if (selection == 0) {

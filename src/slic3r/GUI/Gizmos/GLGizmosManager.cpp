@@ -8,6 +8,7 @@
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
 #include "slic3r/GUI/NotificationManager.hpp"
+#include "slic3r/GUI/Collab/CollabSession.hpp"
 
 #include "slic3r/GUI/Gizmos/GLGizmoMove.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoScale.hpp"
@@ -341,6 +342,11 @@ void GLGizmosManager::reset_all_states()
 bool GLGizmosManager::open_gizmo(EType type)
 {
     int idx = static_cast<int>(type);
+
+    // Collaborative painting: only the color painting gizmo may be used while
+    // a session is active (closing the current gizmo is always allowed).
+    if (m_current != type && type != EType::MmSegmentation && Collab::CollabSessionManager::scene_locked_with_notice())
+        return false;
 
     // re-open same type cause closing
     if (m_current == type) type = Undefined;
