@@ -632,14 +632,18 @@ void CollabSession::sync_paint_state()
             if (synced_it != m_synced_ts.end() && synced_it->second == ts)
                 continue;
 
-            const auto author_it = m_last_author.find(key);
-            if (author_it != m_last_author.end() && author_it->second != m_my_user_id) {
-                // The last write came from a remote user and the local state
-                // diverged (typically a local undo reverted it). Restore the
-                // remote state instead of broadcasting stale data.
-                if (auto cache_it = m_remote_cache.find(key); cache_it != m_remote_cache.end()) {
-                    apply_remote_paint(key, cache_it->second, author_it->second, true);
-                    continue;
+            // Annotation timestamps come from a globally increasing counter, so
+            // a timestamp older than the last synced one means undo/redo rolled
+            // the volume back rather than the user painting something new.
+            if (synced_it != m_synced_ts.end() && ts < synced_it->second) {
+                const auto author_it = m_last_author.find(key);
+                if (author_it != m_last_author.end() && author_it->second != m_my_user_id) {
+                    // The rolled back state was last painted by a remote user,
+                    // so restore theirs instead of broadcasting stale data.
+                    if (auto cache_it = m_remote_cache.find(key); cache_it != m_remote_cache.end()) {
+                        apply_remote_paint(key, cache_it->second, author_it->second, true);
+                        continue;
+                    }
                 }
             }
 
