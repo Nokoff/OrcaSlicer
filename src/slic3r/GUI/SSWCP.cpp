@@ -5041,7 +5041,9 @@ void SSWCP_MachineManage_Instance::sw_DeleteDevices()
                     }
                 }
                 wxGetApp().app_config->clear_device_info();
+                wxGetApp().app_config->set("last_connected_dev_id", "");
             } else {
+                const std::string last_id = wxGetApp().app_config->get("last_connected_dev_id");
                 for (size_t i = 0; i < ids.size(); ++i) {
                     std::string dev_id = ids[i].get<std::string>();
 
@@ -5056,6 +5058,8 @@ void SSWCP_MachineManage_Instance::sw_DeleteDevices()
                         }
                     }
                     wxGetApp().app_config->remove_device_info(dev_id);
+                    if (!last_id.empty() && last_id == dev_id)
+                        wxGetApp().app_config->set("last_connected_dev_id", "");
 
                 }
             }
@@ -6102,7 +6106,8 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
 
                                     wxGetApp().app_config->set("use_new_connect", "true");
                                     for (const auto &d : devices) {
-                                        if (d.connected) {
+                                        // Cloud devices are not persisted; only remember LAN for auto-connect.
+                                        if (d.connected && d.link_mode != "wan") {
                                             wxGetApp().app_config->set("last_connected_dev_id", d.dev_id);
                                             break;
                                         }

@@ -2478,6 +2478,8 @@ int GUI_App::OnExit()
 {
     sm_stop_auto_connect();
 
+    MyFilesLibrary::stop_thumbnail_generation();
+
     stop_sync_user_preset();
 
     if (m_device_manager) {
@@ -4511,6 +4513,28 @@ std::string GUI_App::handle_web_request(std::string cmd)
                         desktop_open_any_folder(file_path.make_preferred().string());
                     }
                 }
+            }
+            else if (command_str == "myfiles_delete_files" || command_str == "myfiles_move_files") {
+                std::vector<std::string> paths;
+                if (root.get_child_optional("data") != boost::none) {
+                    pt::ptree data_node = root.get_child("data");
+                    if (auto paths_node = data_node.get_child_optional("paths")) {
+                        for (const auto &kv : *paths_node) {
+                            auto p = kv.second.get_value_optional<std::string>();
+                            if (p && !p->empty())
+                                paths.push_back(*p);
+                        }
+                    }
+                }
+                const bool is_delete = command_str == "myfiles_delete_files";
+                CallAfter([this, paths, is_delete] {
+                    if (!mainframe)
+                        return;
+                    const bool changed = is_delete ? MyFilesLibrary::delete_files(mainframe, paths)
+                                                   : MyFilesLibrary::move_files(mainframe, paths);
+                    if (changed && mainframe->m_webview)
+                        mainframe->m_webview->SendMyFilesList(INT_MAX);
+                });
             }
             // else if (command_str.compare("modelmall_model_advise_get") == 0) {
             //     if (mainframe && this->app_config->get("staff_pick_switch") == "true") {
@@ -7549,13 +7573,18 @@ void GUI_App::sm_auto_connect_primary_device()
     DeviceInfo        info;
     std::string       reason;
     const std::string last_id = app_config->get("last_connected_dev_id");
+    bool              have_info = false;
     if (!last_id.empty()) {
-        if (!app_config->get_device_info(last_id, info)) {
-            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: last used printer is no longer saved";
-            return;
+        if (app_config->get_device_info(last_id, info)) {
+            have_info = true;
+        } else {
+            // Stale id (e.g. cloud device that was never persisted, or deleted).
+            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: last used printer is no longer saved, clearing id";
+            app_config->set("last_connected_dev_id", "");
         }
-    } else {
-        // Nothing remembered yet: fall back to a single reconnectable printer.
+    }
+    if (!have_info) {
+        // Nothing usable remembered: fall back to a single reconnectable printer.
         std::vector<DeviceInfo> candidates;
         for (const auto &d : app_config->get_devices()) {
             if (sm_device_can_auto_connect(d, reason))
@@ -7723,7 +7752,9 @@ bool GUI_App::sm_connect_to_device(const DeviceInfo &device, DynamicPrintConfig 
                 stored.clientId      = connected_info.clientId.empty() ? existing.clientId : connected_info.clientId;
             }
             app_config->save_device_info(stored);
-            app_config->set("last_connected_dev_id", stored.dev_id);
+            // Only LAN devices are persisted across restarts; remember those for auto-connect.
+            if (stored.link_mode != "wan")
+                app_config->set("last_connected_dev_id", stored.dev_id);
             app_config->set("use_new_connect", "true");
 
             set_connect_host(host);

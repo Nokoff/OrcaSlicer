@@ -18,6 +18,55 @@
 	color: #efeff0;
 }
 
+.MyFilesPrimaryBtn:hover {
+	background-color: rgba(0, 150, 136, 0.35);
+}
+
+.MyFilesDangerBtn {
+	border-color: #8B3A3A;
+	background-color: rgba(198, 40, 40, 0.2);
+	color: #FFCDD2;
+}
+
+.MyFilesDangerBtn:hover {
+	background-color: rgba(198, 40, 40, 0.35);
+}
+
+#MyFilesSelectionBar {
+	border-color: #3E3E45;
+	background: #2b2b2f;
+}
+
+#MyFilesSortBlock label {
+	color: #9A9AA0;
+}
+
+#MyFilesSort {
+	border-color: #3E3E45;
+	background: #2b2b2f;
+	color: #E5E5E7;
+}
+
+#MyFilesHint {
+	color: #8A8A90;
+}
+
+#MyFilesProgressLabel {
+	color: #9A9AA0;
+}
+
+#MyFilesProgressTrack {
+	background: #3E3E45;
+}
+
+.FileItem.selected .FileImg {
+	background-color: #3E3E45;
+}
+
+.FileItem .FileCheck {
+	background: #2b2b2f;
+}
+
 #myfiles_context_menu {
 	background: #2b2b2f;
 	border-color: #3E3E45;

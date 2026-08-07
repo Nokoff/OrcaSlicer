@@ -466,6 +466,8 @@ void WebViewPanel::SendMyFilesList(int images)
     wxString strJS = wxString::Format(
         "window.dispatchMyFilesMessage ? window.dispatchMyFilesMessage(%s) : window.postMessage(%s)", payload, payload);
     RunScript(strJS);
+    // Fill STL / thumbnail-less 3MF previews progressively so the list stays responsive.
+    MyFilesLibrary::pump_thumbnail_generation(this);
 }
 
 wxString WebViewPanel::make_home_url() const

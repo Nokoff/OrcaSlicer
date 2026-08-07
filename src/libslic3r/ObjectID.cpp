@@ -2,7 +2,7 @@
 
 namespace Slic3r {
 
-size_t ObjectBase::s_last_id = 0;
+std::atomic<size_t> ObjectBase::s_last_id{0};
 
 // Unique object / instance ID for the wipe tower.
 ObjectID wipe_tower_object_id()

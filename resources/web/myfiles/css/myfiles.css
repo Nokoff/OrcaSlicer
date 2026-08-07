@@ -65,6 +65,135 @@ body {
 	background-color: #BFE1DE;
 }
 
+.MyFilesDangerBtn {
+	border-color: #E57373;
+	background-color: #FDECEC;
+	color: #C62828;
+}
+
+.MyFilesDangerBtn:hover {
+	background-color: #F8CACA;
+}
+
+#MyFilesSelectionBar {
+	display: none;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+	padding: 8px 12px;
+	margin: 0 0 12px 0;
+	border: 1px solid #BFE1DE;
+	border-radius: 8px;
+	background: #E5F0EE;
+}
+
+#MyFilesSelectionCount {
+	font-weight: 600;
+}
+
+#MyFilesSortBlock {
+	display: none;
+	align-items: center;
+	gap: 6px;
+	margin-right: 4px;
+}
+
+#MyFilesSortBlock label {
+	color: #6B6B70;
+	white-space: nowrap;
+}
+
+#MyFilesSort {
+	height: 30px;
+	padding: 0 6px;
+	border: 1px solid #D9D9DE;
+	border-radius: 6px;
+	background: #FFFFFF;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+
+#MyFilesSort:hover {
+	border-color: #009688;
+}
+
+#MyFilesHint {
+	margin: 0 0 12px 0;
+	color: #8A8A90;
+}
+
+#MyFilesProgress {
+	margin: 0 0 12px 0;
+}
+
+#MyFilesProgressLabel {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 6px;
+	color: #6B6B70;
+}
+
+#MyFilesProgressTrack {
+	height: 4px;
+	border-radius: 2px;
+	background: #E4E4E7;
+	overflow: hidden;
+}
+
+#MyFilesProgressBar {
+	width: 0;
+	height: 100%;
+	border-radius: 2px;
+	background: #009688;
+	transition: width 180ms ease-out;
+}
+
+.MyFilesSelectionActions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.FileItem.selected .FileImg {
+	outline: 2px solid #009688;
+	outline-offset: 0;
+	background-color: #D7EFEC;
+}
+
+.FileItem .FileCheck {
+	display: none;
+	position: absolute;
+	top: 8px;
+	left: 8px;
+	width: 18px;
+	height: 18px;
+	border-radius: 4px;
+	border: 1px solid #009688;
+	background: #fff;
+	z-index: 2;
+}
+
+.FileItem.selected .FileCheck {
+	display: block;
+	background: #009688;
+}
+
+.FileItem.selected .FileCheck::after {
+	content: "";
+	position: absolute;
+	left: 5px;
+	top: 1px;
+	width: 5px;
+	height: 10px;
+	border: solid #fff;
+	border-width: 0 2px 2px 0;
+	transform: rotate(45deg);
+}
+
 #MyFilesEmptyState {
 	display: none;
 	flex-direction: column;
@@ -107,4 +236,14 @@ body {
 
 #myfiles_context_menu .CT_Item:hover {
 	background: #E5F0EE;
+}
+
+#myfiles_context_menu .CT_Move {
+	width: 16px;
+	height: 16px;
+	margin-right: 10px;
+	background: linear-gradient(135deg, #009688 0%, #009688 40%, transparent 40%),
+		linear-gradient(45deg, transparent 50%, #009688 50%);
+	border-radius: 2px;
+	opacity: 0.85;
 }

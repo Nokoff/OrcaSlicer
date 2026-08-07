@@ -26,9 +26,27 @@
 			<div id="MyFilesFolderPath" class="TextS2" title=""></div>
 		</div>
 		<div id="MyFilesActions">
+			<div id="MyFilesSortBlock">
+				<label for="MyFilesSort" class="TextS2 trans" tid="t_mf13">Sort by</label>
+				<select id="MyFilesSort" class="TextS1" onChange="OnChangeMyFilesSort(this.value)">
+					<option value="date_desc" class="trans" tid="t_mf14">Newest first</option>
+					<option value="date_asc" class="trans" tid="t_mf15">Oldest first</option>
+					<option value="name_asc" class="trans" tid="t_mf16">Name (A–Z)</option>
+					<option value="name_desc" class="trans" tid="t_mf17">Name (Z–A)</option>
+				</select>
+			</div>
 			<div id="MyFilesRefreshBtn" class="MyFilesActionBtn trans TextS1" tid="t_mf8" onClick="OnRefreshMyFiles()">Refresh</div>
 			<div id="MyFilesChangeFolderBtn" class="MyFilesActionBtn trans TextS1" tid="t_mf3" onClick="OnChangeMyFilesFolder()">Change Folder</div>
 			<div id="MyFilesChooseFolderBtn" class="MyFilesActionBtn MyFilesPrimaryBtn trans TextS1" tid="t_mf2" onClick="OnSelectMyFilesFolder()">Choose Folder</div>
+		</div>
+	</div>
+
+	<div id="MyFilesSelectionBar">
+		<div id="MyFilesSelectionCount" class="TextS1">0 selected</div>
+		<div class="MyFilesSelectionActions">
+			<div class="MyFilesActionBtn MyFilesDangerBtn trans TextS1" tid="t_mf9" onClick="OnDeleteSelectedMyFiles()">Delete</div>
+			<div class="MyFilesActionBtn trans TextS1" tid="t_mf10" onClick="OnMoveSelectedMyFiles()">Move To…</div>
+			<div class="MyFilesActionBtn trans TextS1" tid="t_mf11" onClick="ClearMyFilesSelection()">Clear</div>
 		</div>
 	</div>
 
@@ -49,11 +67,29 @@
 		<div class="Content-Title TextS1 trans" tid="t_mf6">No supported files found in this folder.</div>
 	</div>
 
+	<div id="MyFilesProgress" style="display:none;">
+		<div id="MyFilesProgressLabel" class="TextS2"><span class="trans" tid="t_mf12">Generating previews</span> <span id="MyFilesProgressCount"></span></div>
+		<div id="MyFilesProgressTrack"><div id="MyFilesProgressBar"></div></div>
+	</div>
+
+	<div id="MyFilesHint" class="TextS2" style="display:none;">
+		<span id="MyFilesHintWin" class="trans" tid="t_mf18">Double-click to open. Ctrl+click or Shift+click to select several files.</span>
+		<span id="MyFilesHintMac" class="trans" tid="t_mf19" style="display:none;">Double-click to open. ⌘+click or Shift+click to select several files.</span>
+	</div>
+
 	<div id="RecentFileArea">
 		<div id="FileList"></div>
 	</div>
 
 	<div id="myfiles_context_menu">
+		<div id="CT_Delete_Bar" class="CT_Item" onClick="OnDeleteSelectedMyFiles()">
+			<div class="CT_Icon CT_Delete"></div>
+			<div class="CT_Text trans" tid="t_mf9">Delete</div>
+		</div>
+		<div id="CT_Move_Bar" class="CT_Item" onClick="OnMoveSelectedMyFiles()">
+			<div class="CT_Icon CT_Move"></div>
+			<div class="CT_Text trans" tid="t_mf10">Move To…</div>
+		</div>
 		<div id="CT_Folder_Bar" class="CT_Item" onClick="OnExploreMyFile()">
 			<div class="CT_Icon CT_Explore"></div>
 			<div class="CT_Text trans" tid="t_mf7">Open Containing Folder</div>

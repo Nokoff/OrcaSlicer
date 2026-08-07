@@ -1,6 +1,8 @@
 #ifndef slic3r_ObjectID_hpp_
 #define slic3r_ObjectID_hpp_
 
+#include <atomic>
+
 #include <cereal/access.hpp>
 #include <cereal/types/base_class.hpp>
 
@@ -45,8 +47,9 @@ private:
 // to synchronize the front end (UI) with the back end (BackgroundSlicingProcess / Print / PrintObject).
 // Also base for Print, PrintObject, SLAPrint, SLAPrintObject to provide a unique ID for matching Model / ModelObject
 // with their corresponding Print / PrintObject objects by the notification center at the UI when processing back-end warnings.
-// Achtung! The s_last_id counter is not thread safe, so it is expected, that the ObjectBase derived instances
-// are only instantiated from the main thread.
+// The s_last_id counter is atomic, so ObjectBase derived instances may also be built on worker
+// threads (e.g. the My Files thumbnail worker loading a Model) without handing out duplicate IDs.
+// Everything else about these objects still belongs to the thread that owns them.
 class ObjectBase
 {
 public:
@@ -84,7 +87,7 @@ private:
     ObjectID                m_id;
 
 	static inline ObjectID  generate_new_id() { return ObjectID(++ s_last_id); }
-    static size_t           s_last_id;
+    static std::atomic<size_t> s_last_id;
 	
 	friend ObjectID wipe_tower_object_id();
 	friend ObjectID wipe_tower_instance_id();
