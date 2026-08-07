@@ -498,18 +498,56 @@ public:
                        startX + brandExt.GetWidth() + gap,
                        tagY);
 
-        // Fork name below brand, centered. Darker than the beta line below it so the
-        // fork this build came from is the first thing read after the brand itself.
+        // Fork name below brand, centered, drawn as a glowing crimson marker so the
+        // fork this build came from reads as deliberate branding rather than a
+        // leftover debug string.
         int forkY = scaleY(279);
-        memDc.SetFont(m_constant_text.versionFont);
-        memDc.SetTextForeground(wxColour(90, 90, 90));
+        memDc.SetFont(m_constant_text.forkFont);
         wxSize forkExt = memDc.GetTextExtent(m_constant_text.forkText);
-        wxRect forkRect(wxPoint(0, forkY),
-                        wxPoint(width, forkY + forkExt.GetHeight()));
-        memDc.DrawLabel(m_constant_text.forkText, forkRect, wxALIGN_CENTER);
+        int    forkX   = (width - forkExt.GetWidth()) / 2;
 
-        // Beta text below the fork name, centered
-        int betaY = scaleY(300);
+        // The halo is built from concentric rings of offset draws, lightest and
+        // widest first: a plain wxMemoryDC gives us no alpha channel to blend
+        // with, so successive opaque passes toward the centre are what produce
+        // the falloff. Each ring draws only its outline (dx^2+dy^2 >= r^2), since
+        // the inner positions are covered by the rings that follow.
+        const struct { int radius; wxColour colour; } fork_halo[] = {
+            {3, wxColour(253, 232, 232)},
+            {2, wxColour(248, 201, 201)},
+            {1, wxColour(238, 146, 150)},
+        };
+        for (const auto &ring : fork_halo) {
+            memDc.SetTextForeground(ring.colour);
+            const int r2 = ring.radius * ring.radius;
+            for (int dx = -ring.radius; dx <= ring.radius; ++dx)
+                for (int dy = -ring.radius; dy <= ring.radius; ++dy)
+                    if (dx * dx + dy * dy >= r2)
+                        memDc.DrawText(m_constant_text.forkText, forkX + dx, forkY + dy);
+        }
+
+        // Crisp core on top of the glow.
+        memDc.SetTextForeground(wxColour(198, 27, 45));
+        memDc.DrawText(m_constant_text.forkText, forkX, forkY);
+
+        // Accent rule under the marker, fading from crimson at the centre out to
+        // the white background at both ends so it reads as a glow rather than a
+        // hard underline.
+        const int ruleY    = forkY + forkExt.GetHeight() + scaleY(3);
+        const int ruleHalf = std::max(forkExt.GetWidth() / 2, 1);
+        const int centreX  = width / 2;
+        for (int i = 0; i <= ruleHalf; ++i) {
+            const double t = double(i) / double(ruleHalf);
+            memDc.SetPen(wxPen(wxColour(int(198 + (255 - 198) * t),
+                                        int( 27 + (255 -  27) * t),
+                                        int( 45 + (255 -  45) * t))));
+            memDc.DrawPoint(centreX + i, ruleY);
+            memDc.DrawPoint(centreX - i, ruleY);
+        }
+
+        // Beta text below the fork marker, centered. Positioned off the accent
+        // rule rather than a fixed coordinate so it keeps its clearance if the
+        // fork font size changes.
+        int betaY = ruleY + scaleY(8);
         memDc.SetFont(m_constant_text.versionFont);
         memDc.SetTextForeground(wxColour(143, 143, 143));
         wxSize betaExt = memDc.GetTextExtent(m_constant_text.betaText);
@@ -598,6 +636,7 @@ private:
 
         wxFont   titleFont;
         wxFont   versionFont;
+        wxFont   forkFont;
         wxFont   loadingFont;
 
         void init()
@@ -610,6 +649,10 @@ private:
 
             titleFont   = Label::sysFont(20, false);
             versionFont = Label::Body_13;
+            // Bold and larger: the fork marker is branding, so it carries more
+            // weight than the grey version and beta lines around it. Kept below
+            // the 20pt title so it reads as a subtitle, not a competing heading.
+            forkFont    = Label::sysFont(16, true);
             loadingFont = Label::Body_11;
         }
     }
