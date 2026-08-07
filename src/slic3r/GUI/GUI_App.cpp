@@ -498,8 +498,18 @@ public:
                        startX + brandExt.GetWidth() + gap,
                        tagY);
 
-        // Beta text below brand, centered
-        int betaY = scaleY(279);
+        // Fork name below brand, centered. Darker than the beta line below it so the
+        // fork this build came from is the first thing read after the brand itself.
+        int forkY = scaleY(279);
+        memDc.SetFont(m_constant_text.versionFont);
+        memDc.SetTextForeground(wxColour(90, 90, 90));
+        wxSize forkExt = memDc.GetTextExtent(m_constant_text.forkText);
+        wxRect forkRect(wxPoint(0, forkY),
+                        wxPoint(width, forkY + forkExt.GetHeight()));
+        memDc.DrawLabel(m_constant_text.forkText, forkRect, wxALIGN_CENTER);
+
+        // Beta text below the fork name, centered
+        int betaY = scaleY(300);
         memDc.SetFont(m_constant_text.versionFont);
         memDc.SetTextForeground(wxColour(143, 143, 143));
         wxSize betaExt = memDc.GetTextExtent(m_constant_text.betaText);
@@ -583,6 +593,7 @@ private:
     {
         wxString title;
         wxString version;
+        wxString forkText;
         wxString betaText;
 
         wxFont   titleFont;
@@ -593,6 +604,8 @@ private:
         {
             title    = "Snapmaker Orca";
             version  = std::string("V") + Snapmaker_VERSION;
+            // Marks this build as our fork rather than upstream Snapmaker Orca.
+            forkText = "Nokoff version";
             betaText = _L("Beta version");
 
             titleFont   = Label::sysFont(20, false);
