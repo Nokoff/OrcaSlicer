@@ -85,6 +85,9 @@ public:
     // bypass the scene edit lock.
     bool is_applying_project() const { return m_applying_project; }
 
+    // Deterministic per-user color used for cursors/claim highlighting.
+    static ColorRGBA user_color_for_id(int user_id);
+
 private:
     friend class CollabSessionManager;
 
@@ -126,8 +129,6 @@ private:
     void remove_user(int user_id);
     void end_session_with_notice(const std::string &reason);
 
-    static ColorRGBA user_color_for_id(int user_id);
-
     Role        m_role;
     std::string m_token;
     std::string m_link;
@@ -136,6 +137,10 @@ private:
     int         m_next_user_id = 1;
     bool        m_active      = false;
     bool        m_applying_project = false;
+    // shutdown() must stay idempotent without keying off m_active:
+    // end_session_with_notice() clears m_active before the deferred stop()
+    // runs, which would otherwise make shutdown() a no-op.
+    bool        m_shutdown_done = false;
 
     std::unique_ptr<CollabServer> m_server; // host only
     std::unique_ptr<CollabClient> m_client; // guest only

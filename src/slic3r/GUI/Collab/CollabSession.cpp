@@ -222,9 +222,12 @@ bool CollabSession::start_joining(const SessionLink &link, const std::string &us
 
 void CollabSession::shutdown(bool notify_peers)
 {
-    if (!m_active)
+    if (m_shutdown_done)
         return;
-    m_active = false;
+    m_shutdown_done = true;
+    m_active        = false;
+    BOOST_LOG_TRIVIAL(warning) << "CollabSession: shutting down ("
+                               << (m_role == Role::Host ? "host" : "guest") << ")";
 
     if (m_role == Role::Host && m_server) {
         if (notify_peers)
@@ -265,14 +268,19 @@ std::string CollabSession::status_text() const
 void CollabSession::handle_server_message(int client_id, const json &msg)
 {
     const std::string type = msg.value("type", std::string());
+    BOOST_LOG_TRIVIAL(warning) << "CollabSession: host received message type '" << type << "' from client " << client_id;
 
     if (type == MsgType::Hello) {
         if (msg.value("token", std::string()) != m_token) {
+            BOOST_LOG_TRIVIAL(warning) << "CollabSession: rejecting client " << client_id
+                                       << ": invalid session token (the invite link is stale if the session was restarted)";
             m_server->send_to(client_id, json{{"type", MsgType::Error}, {"message", "Invalid session token."}}.dump());
             m_server->close_client(client_id);
             return;
         }
         if (msg.value("version", 0) != PROTOCOL_VERSION) {
+            BOOST_LOG_TRIVIAL(warning) << "CollabSession: rejecting client " << client_id << ": protocol version "
+                                       << msg.value("version", 0) << " != " << PROTOCOL_VERSION << " (build mismatch)";
             m_server->send_to(client_id, json{{"type", MsgType::Error}, {"message", "Incompatible OrcaSlicer version."}}.dump());
             m_server->close_client(client_id);
             return;
@@ -405,7 +413,10 @@ void CollabSession::host_send_project(int client_id)
     boost::filesystem::remove(temp_path, ec);
 
     std::string name = plater->get_project_name().ToUTF8().data();
-    m_server->send_to(client_id, json{{"type", MsgType::Project}, {"name", name}, {"data", base64_encode(content)}}.dump());
+    const std::string payload = json{{"type", MsgType::Project}, {"name", name}, {"data", base64_encode(content)}}.dump();
+    BOOST_LOG_TRIVIAL(warning) << "CollabSession: sending project '" << name << "' to client " << client_id << " ("
+                               << content.size() << " bytes 3mf, " << payload.size() << " bytes on the wire)";
+    m_server->send_to(client_id, payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -414,20 +425,24 @@ void CollabSession::host_send_project(int client_id)
 void CollabSession::handle_client_connected(bool success, const std::string &error)
 {
     if (!success) {
+        BOOST_LOG_TRIVIAL(warning) << "CollabSession: connect failed: " << error;
         end_session_with_notice(format(_u8L("Could not connect to the collaboration session: %1%"), error));
         return;
     }
+    BOOST_LOG_TRIVIAL(warning) << "CollabSession: connected, sending Hello (protocol " << PROTOCOL_VERSION << ")";
     m_client->send(json{{"type", MsgType::Hello}, {"token", m_token}, {"name", m_my_name}, {"version", PROTOCOL_VERSION}}.dump());
 }
 
 void CollabSession::handle_client_disconnected()
 {
+    BOOST_LOG_TRIVIAL(warning) << "CollabSession: guest disconnected (my_user_id=" << m_my_user_id << ")";
     end_session_with_notice(_u8L("Disconnected from the collaboration session."));
 }
 
 void CollabSession::handle_client_message(const json &msg)
 {
     const std::string type = msg.value("type", std::string());
+    BOOST_LOG_TRIVIAL(warning) << "CollabSession: guest received message type '" << type << "'";
 
     if (type == MsgType::Welcome) {
         m_my_user_id = msg.value("user_id", -1);
@@ -632,8 +647,16 @@ void CollabSession::sync_paint_state()
             if (synced_it != m_synced_ts.end() && synced_it->second == ts)
                 continue;
 
+            // A volume the local user just painted is authoritative and must be
+            // broadcast, even though the last recorded author is someone else.
+            // m_my_stroke_claims still holds this stroke's keys here (end_stroke()
+            // clears them only after this call) and is always empty on the
+            // undo/redo path, so this separates "I just painted over their work"
+            // from "a local undo reverted their work".
+            const bool painted_this_stroke = m_my_stroke_claims.find(key) != m_my_stroke_claims.end();
+
             const auto author_it = m_last_author.find(key);
-            if (author_it != m_last_author.end() && author_it->second != m_my_user_id) {
+            if (!painted_this_stroke && author_it != m_last_author.end() && author_it->second != m_my_user_id) {
                 // The last write came from a remote user and the local state
                 // diverged (typically a local undo reverted it). Restore the
                 // remote state instead of broadcasting stale data.

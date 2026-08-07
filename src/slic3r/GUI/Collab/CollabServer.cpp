@@ -33,19 +33,35 @@ public:
         auto self = shared_from_this();
         m_ws.async_accept([self](beast::error_code ec) {
             if (ec) {
-                BOOST_LOG_TRIVIAL(warning) << "CollabServer: handshake failed: " << ec.message();
+                BOOST_LOG_TRIVIAL(warning) << "CollabServer: peer " << self->m_client_id
+                                           << " websocket handshake failed: " << ec.message();
                 self->m_server.remove_peer(self->m_client_id);
                 return;
             }
+            BOOST_LOG_TRIVIAL(warning) << "CollabServer: peer " << self->m_client_id << " websocket handshake OK";
             self->read_next();
         });
     }
 
     void send(const std::string &message)
     {
+        if (m_closing)
+            return;
         m_send_queue.push_back(message);
         if (m_send_queue.size() == 1)
             write_next();
+    }
+
+    // Graceful close: let whatever is already queued (typically the Error
+    // message explaining a rejected handshake) reach the guest before the
+    // socket goes away. A bare close() here discards it, leaving the guest
+    // with an unexplained disconnect.
+    void close_after_flush()
+    {
+        if (m_send_queue.empty())
+            close();
+        else
+            m_closing = true;
     }
 
     void close()
@@ -61,10 +77,14 @@ private:
         auto self = shared_from_this();
         m_ws.async_read(m_buffer, [self](beast::error_code ec, std::size_t) {
             if (ec) {
+                BOOST_LOG_TRIVIAL(warning) << "CollabServer: peer " << self->m_client_id
+                                           << " read ended: " << ec.message();
                 self->m_server.remove_peer(self->m_client_id);
                 return;
             }
             std::string message = beast::buffers_to_string(self->m_buffer.data());
+            BOOST_LOG_TRIVIAL(warning) << "CollabServer: peer " << self->m_client_id << " received "
+                                       << message.size() << " bytes";
             self->m_buffer.consume(self->m_buffer.size());
             if (self->m_server.m_on_message)
                 self->m_server.m_on_message(self->m_client_id, message);
@@ -76,14 +96,19 @@ private:
     {
         auto self = shared_from_this();
         m_ws.text(true);
-        m_ws.async_write(net::buffer(m_send_queue.front()), [self](beast::error_code ec, std::size_t) {
+        m_ws.async_write(net::buffer(m_send_queue.front()), [self](beast::error_code ec, std::size_t bytes) {
             if (ec) {
+                BOOST_LOG_TRIVIAL(warning) << "CollabServer: peer " << self->m_client_id
+                                           << " write failed: " << ec.message();
                 self->m_server.remove_peer(self->m_client_id);
                 return;
             }
+            BOOST_LOG_TRIVIAL(warning) << "CollabServer: peer " << self->m_client_id << " sent " << bytes << " bytes";
             self->m_send_queue.pop_front();
             if (!self->m_send_queue.empty())
                 self->write_next();
+            else if (self->m_closing)
+                self->close();
         });
     }
 
@@ -92,6 +117,7 @@ private:
     websocket::stream<tcp::socket> m_ws;
     beast::flat_buffer             m_buffer;
     std::deque<std::string>        m_send_queue;
+    bool                           m_closing = false;
 };
 
 unsigned short CollabServer::start(unsigned short port, unsigned short range)
@@ -127,7 +153,7 @@ unsigned short CollabServer::start(unsigned short port, unsigned short range)
         }
     });
 
-    BOOST_LOG_TRIVIAL(info) << "CollabServer: listening on port " << bound_port;
+    BOOST_LOG_TRIVIAL(warning) << "CollabServer: listening on port " << bound_port;
     return bound_port;
 }
 
@@ -166,6 +192,11 @@ void CollabServer::accept_next()
                 BOOST_LOG_TRIVIAL(warning) << "CollabServer: accept failed: " << ec.message();
             return;
         }
+        std::string remote;
+        try {
+            remote = socket.remote_endpoint().address().to_string();
+        } catch (const std::exception &) {}
+
         int client_id;
         std::shared_ptr<Peer> peer;
         {
@@ -174,6 +205,7 @@ void CollabServer::accept_next()
             peer      = std::make_shared<Peer>(*this, client_id, std::move(socket));
             m_peers.emplace(client_id, peer);
         }
+        BOOST_LOG_TRIVIAL(warning) << "CollabServer: TCP accepted peer " << client_id << " from " << remote;
         peer->start();
         accept_next();
     });
@@ -237,7 +269,7 @@ void CollabServer::close_client(int client_id)
                 peer = it->second;
         }
         if (peer)
-            peer->close();
+            peer->close_after_flush();
     });
 }
 

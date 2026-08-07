@@ -33,6 +33,7 @@ void CollabClient::connect(const std::string &host, unsigned short port)
             }));
             m_ws->handshake(host + ":" + std::to_string(port), "/");
 
+            BOOST_LOG_TRIVIAL(warning) << "CollabClient: websocket handshake OK to " << host << ":" << port;
             m_connected.store(true);
             if (m_on_connect)
                 m_on_connect(true, std::string());
@@ -89,10 +90,12 @@ void CollabClient::read_next()
 {
     m_ws->async_read(m_buffer, [this](beast::error_code ec, std::size_t) {
         if (ec) {
+            BOOST_LOG_TRIVIAL(warning) << "CollabClient: read ended: " << ec.message();
             handle_disconnect();
             return;
         }
         std::string message = beast::buffers_to_string(m_buffer.data());
+        BOOST_LOG_TRIVIAL(warning) << "CollabClient: received " << message.size() << " bytes";
         m_buffer.consume(m_buffer.size());
         if (m_on_message)
             m_on_message(message);
@@ -103,11 +106,13 @@ void CollabClient::read_next()
 void CollabClient::write_next()
 {
     m_ws->text(true);
-    m_ws->async_write(net::buffer(m_send_queue.front()), [this](beast::error_code ec, std::size_t) {
+    m_ws->async_write(net::buffer(m_send_queue.front()), [this](beast::error_code ec, std::size_t bytes) {
         if (ec) {
+            BOOST_LOG_TRIVIAL(warning) << "CollabClient: write failed: " << ec.message();
             handle_disconnect();
             return;
         }
+        BOOST_LOG_TRIVIAL(warning) << "CollabClient: sent " << bytes << " bytes";
         m_send_queue.pop_front();
         if (!m_send_queue.empty())
             write_next();
