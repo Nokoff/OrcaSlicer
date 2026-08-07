@@ -8,6 +8,7 @@
 #include "slic3r/GUI/Camera.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/OpenGLManager.hpp"
+#include "slic3r/GUI/Collab/CollabSession.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -277,6 +278,52 @@ void GLGizmoPainterBase::render_cursor_sphere(const Transform3d& trafo) const
 
     if (is_left_handed)
         glsafe(::glFrontFace(GL_CCW));
+
+    shader->stop_using();
+}
+
+void GLGizmoPainterBase::render_collab_cursors()
+{
+    if (!this->is_collab_paint_gizmo())
+        return;
+    Collab::CollabSession *collab = Collab::CollabSessionManager::get();
+    if (collab == nullptr)
+        return;
+    const std::vector<Collab::CollabSession::RemoteCursor> cursors = collab->remote_cursors();
+    if (cursors.empty())
+        return;
+
+    if (s_sphere == nullptr) {
+        s_sphere = std::make_shared<GLModel>();
+        s_sphere->init_from(its_make_sphere(1.0, double(PI) / 12.0));
+    }
+
+    GLShaderProgram *shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+
+    shader->start_using();
+    const Camera &camera = wxGetApp().plater()->get_camera();
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+
+    for (const Collab::CollabSession::RemoteCursor &cursor : cursors) {
+        const double radius = std::max(cursor.radius, 0.4);
+        const Transform3d view_model_matrix = camera.get_view_matrix() *
+            Geometry::assemble_transform(cursor.position, Vec3d::Zero(), radius * Vec3d::Ones());
+        shader->set_uniform("view_model_matrix", view_model_matrix);
+
+        const bool is_left_handed = Geometry::Transformation(view_model_matrix).is_left_handed();
+        if (is_left_handed)
+            glsafe(::glFrontFace(GL_CW));
+
+        ColorRGBA color = cursor.color;
+        color.a(0.4f);
+        s_sphere->set_color(color);
+        s_sphere->render();
+
+        if (is_left_handed)
+            glsafe(::glFrontFace(GL_CCW));
+    }
 
     shader->stop_using();
 }
@@ -706,6 +753,16 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
                 part_volumes.push_back(mv);
             }
 
+        // Collaborative painting: resolve the object index used for stroke
+        // locks and live paint synchronization.
+        Collab::CollabSession *collab = this->is_collab_paint_gizmo() ? Collab::CollabSessionManager::get() : nullptr;
+        int collab_obj_idx = -1;
+        if (collab != nullptr) {
+            const ModelObjectPtrs &objects = wxGetApp().model().objects;
+            auto obj_it = std::find(objects.begin(), objects.end(), mo);
+            collab_obj_idx = obj_it == objects.end() ? -1 : int(obj_it - objects.begin());
+        }
+
         // BBS
         if (m_tool_type == ToolType::BRUSH && m_cursor_type == TriangleSelector::CursorType::HEIGHT_RANGE)
         {
@@ -723,6 +780,10 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
                 if (mesh_idx != -1 && m_button_down == Button::None)
                     m_button_down = ((action == SLAGizmoEventType::LeftDown) ? Button::Left : Button::Right);
 
+                // Skip volumes locked by another collaboration user.
+                if (collab != nullptr && !collab->try_begin_paint({collab_obj_idx, mesh_idx}))
+                    continue;
+
                 const Transform3d& trafo_matrix = trafo_matrices[mesh_idx];
                 const Transform3d& trafo_matrix_not_translate = trafo_matrices_not_translate[mesh_idx];
 
@@ -736,6 +797,8 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
                     m_triangle_splitting_enabled, m_paint_on_overhangs_only ? m_highlight_by_angle_threshold_deg : 0.f);
 
                 m_triangle_selectors[mesh_idx]->request_update_render_data(true);
+                if (collab != nullptr)
+                    collab->paint_progress({collab_obj_idx, mesh_idx}, *m_triangle_selectors[mesh_idx]);
                 m_last_mouse_click = _mouse_position;
             }
 
@@ -768,6 +831,11 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
             // dragging while painting (to prevent scene rotations and moving the object)
             if (mesh_idx == -1)
                 return dragging_while_painting;
+
+            // Skip volumes locked by another collaboration user. The event is
+            // still consumed so the scene does not rotate mid-stroke.
+            if (collab != nullptr && !collab->try_begin_paint({collab_obj_idx, mesh_idx}))
+                continue;
 
             const Transform3d &trafo_matrix               = trafo_matrices[mesh_idx];
             const Transform3d &trafo_matrix_not_translate = trafo_matrices_not_translate[mesh_idx];
@@ -815,6 +883,12 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
             }
 
             m_triangle_selectors[mesh_idx]->request_update_render_data(true);
+
+            if (collab != nullptr) {
+                collab->paint_progress({collab_obj_idx, mesh_idx}, *m_triangle_selectors[mesh_idx]);
+                const Vec3d world_hit = trafo_matrix * projected_mouse_positions.back().mesh_hit.cast<double>();
+                collab->send_cursor(world_hit, double(m_cursor_radius));
+            }
 
             m_last_mouse_click = _mouse_position;
         }
@@ -901,6 +975,11 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
         wxString action_name = this->handle_snapshot_action_name(shift_down, m_button_down);
         Plater::TakeSnapshot snapshot(wxGetApp().plater(), std::string(action_name.ToUTF8().data()), UndoRedo::SnapshotType::GizmoAction);
         update_model_object();
+
+        // Broadcast the final stroke state and release the stroke locks.
+        if (this->is_collab_paint_gizmo())
+            if (Collab::CollabSession *collab = Collab::CollabSessionManager::get(); collab != nullptr)
+                collab->end_stroke();
 
         m_button_down = Button::None;
         m_last_mouse_click = Vec2d::Zero();

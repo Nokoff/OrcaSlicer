@@ -56,6 +56,8 @@
 #include <ctime>
 
 #include "GUI_App.hpp"
+#include "Collab/CollabDialogs.hpp"
+#include "Collab/CollabSession.hpp"
 #include "UnsavedChangesDialog.hpp"
 #include "MsgDialog.hpp"
 #include "Notebook.hpp"
@@ -2228,6 +2230,30 @@ static const wxString sep = " - ";
 static const wxString sep = "\t";
 #endif
 
+static wxMenu* generate_collab_menu(MainFrame* mainFrame)
+{
+    wxMenu* collabMenu = new wxMenu();
+
+    append_menu_item(collabMenu, wxID_ANY, _L("Start Session") + dots, _L("Host a collaborative painting session on your local network"),
+        [mainFrame](wxCommandEvent&) { Collab::start_session_from_menu(mainFrame); }, "", nullptr,
+        []() { return !Collab::CollabSessionManager::is_active(); }, mainFrame);
+    append_menu_item(collabMenu, wxID_ANY, _L("Join Session") + dots, _L("Join a collaborative painting session using an invite link"),
+        [mainFrame](wxCommandEvent&) { Collab::join_session_from_menu(mainFrame); }, "", nullptr,
+        []() { return !Collab::CollabSessionManager::is_active(); }, mainFrame);
+    collabMenu->AppendSeparator();
+    append_menu_item(collabMenu, wxID_ANY, _L("Session Info") + dots, _L("Show the invite link and connected participants"),
+        [mainFrame](wxCommandEvent&) { Collab::show_session_info(mainFrame); }, "", nullptr,
+        []() { return Collab::CollabSessionManager::is_active(); }, mainFrame);
+    append_menu_item(collabMenu, wxID_ANY, _L("Copy Invite Link"), _L("Copy the session invite link to the clipboard"),
+        [](wxCommandEvent&) { Collab::copy_invite_link_to_clipboard(); }, "", nullptr,
+        []() { return Collab::CollabSessionManager::is_active(); }, mainFrame);
+    append_menu_item(collabMenu, wxID_ANY, _L("Leave Session"), _L("Leave or end the collaborative painting session"),
+        [](wxCommandEvent&) { Collab::leave_session_from_menu(); }, "", nullptr,
+        []() { return Collab::CollabSessionManager::is_active(); }, mainFrame);
+
+    return collabMenu;
+}
+
 static wxMenu* generate_help_menu()
 {
     wxMenu* helpMenu = new wxMenu();
@@ -2859,6 +2885,9 @@ void MainFrame::init_menubar_as_editor()
     // Help menu
     auto helpMenu = generate_help_menu();
 
+    // Collaborate menu
+    auto collabMenu = generate_collab_menu(this);
+
 #ifndef __APPLE__
     m_topbar->SetFileMenu(fileMenu);
     if (editMenu)
@@ -2876,6 +2905,7 @@ void MainFrame::init_menubar_as_editor()
         },
         "", nullptr, []() { return true; }, this);
 
+    m_topbar->AddDropDownSubMenu(collabMenu, _L("Collaborate"));
     m_topbar->AddDropDownSubMenu(helpMenu, _L("Help"));
 
     // SoftFever calibrations
@@ -3105,6 +3135,8 @@ void MainFrame::init_menubar_as_editor()
         [this]() {return m_plater->is_view3D_shown();; }, this);
 
     m_menubar->Append(calib_menu,wxString::Format("&%s", _L("Calibration")));
+    if (collabMenu)
+        m_menubar->Append(collabMenu, wxString::Format("&%s", _L("Collaborate")));
     if (helpMenu)
         m_menubar->Append(helpMenu, wxString::Format("&%s", _L("Help")));
     SetMenuBar(m_menubar);

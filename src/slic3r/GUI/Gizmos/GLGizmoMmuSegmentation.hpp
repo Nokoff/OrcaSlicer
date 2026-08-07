@@ -81,6 +81,12 @@ public:
     bool on_number_key_down(int number);
     bool on_key_down_select_tool_type(int keyCode);
 
+    // Collaborative painting: color strokes are synchronized in a session.
+    bool is_collab_paint_gizmo() const override { return true; }
+    // Reloads the triangle selector of one model-part volume from remotely
+    // received paint data (indexed among model-part volumes only).
+    void collab_update_volume(int vol_idx, const TriangleSelector::TriangleSplittingData &data);
+
 protected:
     // BBS
     ColorRGBA get_cursor_hover_color() const override;

@@ -78,6 +78,16 @@ set(SLIC3R_GUI_SOURCES
     GUI/CameraUtils.hpp
     GUI/CloneDialog.cpp
     GUI/CloneDialog.hpp
+    GUI/Collab/CollabClient.cpp
+    GUI/Collab/CollabClient.hpp
+    GUI/Collab/CollabDialogs.cpp
+    GUI/Collab/CollabDialogs.hpp
+    GUI/Collab/CollabProtocol.cpp
+    GUI/Collab/CollabProtocol.hpp
+    GUI/Collab/CollabServer.cpp
+    GUI/Collab/CollabServer.hpp
+    GUI/Collab/CollabSession.cpp
+    GUI/Collab/CollabSession.hpp
     GUI/ConfigManipulation.cpp
     GUI/ConfigManipulation.hpp
     GUI/ConfigWizard.cpp

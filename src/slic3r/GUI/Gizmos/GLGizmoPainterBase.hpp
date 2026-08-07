@@ -216,7 +216,13 @@ public:
     /// propagate it otherwise False.</returns>
     bool on_mouse(const wxMouseEvent &mouse_event) override;
 
+    // Whether strokes of this gizmo are synchronized in a collaboration
+    // session (currently only multi-material color painting).
+    virtual bool is_collab_paint_gizmo() const { return false; }
+
 protected:
+    // Renders the brush cursors of remote collaboration users.
+    void render_collab_cursors();
     virtual void render_triangles(const Selection& selection) const;
     void render_cursor();
     void render_cursor_circle();
