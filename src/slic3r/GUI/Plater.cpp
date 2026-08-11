@@ -207,6 +207,29 @@ using namespace nlohmann;
 static const std::pair<unsigned int, unsigned int> THUMBNAIL_SIZE_3MF = { 512, 512 };
 
 namespace Slic3r {
+
+namespace UndoRedo {
+
+struct FilamentState
+{
+    std::vector<std::string>              presets;
+    std::vector<std::vector<std::string>> ams_multi_colors;
+    MixedFilamentManager                  mixed_filaments;
+    DynamicPrintConfig                    project_config;
+    DynamicPrintConfig                    full_config;
+};
+
+struct FilamentChange
+{
+    FilamentState        before;
+    FilamentState        after;
+    t_config_option_keys project_config_keys;
+    t_config_option_keys full_config_keys;
+    bool                 complete { false };
+};
+
+} // namespace UndoRedo
+
 namespace GUI {
 
 static std::string filament_temp_mixing_warning_text()
@@ -8383,6 +8406,7 @@ void Sidebar::show_merge_to_loaded_dialog()
         return;
 
     const FilamentMergePlan& plan = dlg.plan();
+    Plater::TakeFilamentSnapshot snapshot(wxGetApp().plater(), "Merge filaments");
 
     // Retint first, while the plan's indices still address the current slots.
     // Only survivors that stand in for a loaded filament are touched.
@@ -8428,6 +8452,7 @@ void Sidebar::show_merge_similar_dialog()
     if (dlg.ShowModal() != wxID_OK)
         return;
 
+    Plater::TakeFilamentSnapshot snapshot(wxGetApp().plater(), "Merge filaments");
     apply_filament_merges(merge_pairs_from_plan(dlg.plan()));
 }
 
@@ -9319,6 +9344,13 @@ struct Plater::priv
     bool leave_gizmos_stack();
 
     void take_snapshot(const std::string& snapshot_name, UndoRedo::SnapshotType snapshot_type = UndoRedo::SnapshotType::Action);
+    void begin_filament_snapshot(const std::string& snapshot_name);
+    void finish_filament_snapshot();
+    UndoRedo::FilamentState capture_filament_state() const;
+    void restore_filament_state(const UndoRedo::FilamentState& state,
+                                const t_config_option_keys& project_config_keys,
+                                const t_config_option_keys& full_config_keys);
+    void refresh_filaments_after_undo_redo();
     /*void take_snapshot(const wxString& snapshot_name, UndoRedo::SnapshotType snapshot_type = UndoRedo::SnapshotType::Action)
         { this->take_snapshot(std::string(snapshot_name.ToUTF8().data()), snapshot_type); }*/
     int  get_active_snapshot_index();
@@ -9574,7 +9606,8 @@ private:
                                                               * instead of calls for each action separately
                                                               * */
     // BBS: single snapshot
-    Plater::SingleSnapshot     *m_single = nullptr;
+    Plater::SingleSnapshot                    *m_single = nullptr;
+    std::shared_ptr<UndoRedo::FilamentChange> m_pending_filament_change;
     // BBS: backup
     size_t m_saved_timestamp = 0;
     size_t m_backup_timestamp = 0;
@@ -15914,6 +15947,97 @@ int Plater::priv::get_active_snapshot_index()
     return it - ss_stack.begin();
 }
 
+UndoRedo::FilamentState Plater::priv::capture_filament_state() const
+{
+    UndoRedo::FilamentState state;
+    if (const PresetBundle* preset_bundle = wxGetApp().preset_bundle) {
+        state.presets          = preset_bundle->filament_presets;
+        state.ams_multi_colors = preset_bundle->ams_multi_color_filment;
+        state.mixed_filaments  = preset_bundle->mixed_filaments;
+        state.project_config   = preset_bundle->project_config;
+    }
+    if (config != nullptr)
+        state.full_config = *config;
+    return state;
+}
+
+static void apply_changed_config(DynamicPrintConfig& target,
+                                 const DynamicPrintConfig& source,
+                                 const t_config_option_keys& keys)
+{
+    for (const std::string& key : keys) {
+        if (source.has(key))
+            target.apply_only(source, {key}, true);
+        else
+            target.erase(key);
+    }
+}
+
+static t_config_option_keys changed_config_keys(const DynamicPrintConfig& before, const DynamicPrintConfig& after)
+{
+    t_config_option_keys keys = before.diff(after);
+    for (const std::string& key : before.keys())
+        if (!after.has(key))
+            keys.emplace_back(key);
+    for (const std::string& key : after.keys())
+        if (!before.has(key))
+            keys.emplace_back(key);
+    sort_remove_duplicates(keys);
+    return keys;
+}
+
+void Plater::priv::restore_filament_state(const UndoRedo::FilamentState& state,
+                                          const t_config_option_keys& project_config_keys,
+                                          const t_config_option_keys& full_config_keys)
+{
+    PresetBundle* preset_bundle = wxGetApp().preset_bundle;
+    if (preset_bundle == nullptr)
+        return;
+
+    preset_bundle->filament_presets        = state.presets;
+    preset_bundle->ams_multi_color_filment = state.ams_multi_colors;
+    preset_bundle->mixed_filaments         = state.mixed_filaments;
+    apply_changed_config(preset_bundle->project_config, state.project_config, project_config_keys);
+    if (config != nullptr)
+        apply_changed_config(*config, state.full_config, full_config_keys);
+}
+
+void Plater::priv::refresh_filaments_after_undo_redo()
+{
+    PresetBundle* preset_bundle = wxGetApp().preset_bundle;
+    if (preset_bundle == nullptr)
+        return;
+
+    const size_t count = preset_bundle->filament_presets.size();
+    q->update_filament_colors_in_full_config();
+    sidebar->on_filaments_change(count);
+    sidebar->obj_list()->update_objects_list_filament_column(count);
+    wxGetApp().get_tab(Preset::TYPE_PRINT)->update();
+    preset_bundle->export_selections(*wxGetApp().app_config);
+}
+
+void Plater::priv::begin_filament_snapshot(const std::string& snapshot_name)
+{
+    assert(m_pending_filament_change == nullptr);
+    m_pending_filament_change = std::make_shared<UndoRedo::FilamentChange>();
+    m_pending_filament_change->before = capture_filament_state();
+    take_snapshot(snapshot_name);
+}
+
+void Plater::priv::finish_filament_snapshot()
+{
+    if (m_pending_filament_change == nullptr)
+        return;
+
+    m_pending_filament_change->after = capture_filament_state();
+    m_pending_filament_change->project_config_keys = changed_config_keys(
+        m_pending_filament_change->before.project_config, m_pending_filament_change->after.project_config);
+    m_pending_filament_change->full_config_keys = changed_config_keys(
+        m_pending_filament_change->before.full_config, m_pending_filament_change->after.full_config);
+    m_pending_filament_change->complete = true;
+    m_pending_filament_change.reset();
+}
+
 void Plater::priv::take_snapshot(const std::string& snapshot_name, const UndoRedo::SnapshotType snapshot_type)
 {
     if (m_prevent_snapshots > 0)
@@ -15925,6 +16049,7 @@ void Plater::priv::take_snapshot(const std::string& snapshot_name, const UndoRed
     UndoRedo::SnapshotData snapshot_data;
     snapshot_data.snapshot_type      = snapshot_type;
     snapshot_data.printer_technology = this->printer_technology;
+    snapshot_data.filament_change    = m_pending_filament_change;
     if (this->view3D->is_layers_editing_enabled())
         snapshot_data.flags |= UndoRedo::SnapshotData::VARIABLE_LAYER_EDITING_ACTIVE;
     if (this->sidebar->obj_list()->is_selected(itSettings)) {
@@ -16053,6 +16178,29 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
     // Make sure that no updating function calls take_snapshot until we are done.
     SuppressSnapshots snapshot_supressor(q);
 
+    const size_t active_snapshot_time = this->undo_redo_stack().active_snapshot_time();
+    const bool undoing = it_snapshot->timestamp < active_snapshot_time;
+    const std::vector<UndoRedo::Snapshot>& snapshots = this->undo_redo_stack().snapshots();
+    const auto it_active = std::lower_bound(snapshots.begin(), snapshots.end(), UndoRedo::Snapshot(active_snapshot_time));
+
+    // A snapshot names the action in the interval beginning at that snapshot.
+    // When jumping backward restore the state before the earliest crossed
+    // filament action; when jumping forward restore the state after the latest.
+    std::shared_ptr<UndoRedo::FilamentChange> filament_change;
+    if (undoing) {
+        for (auto it = it_snapshot; it != it_active; ++it) {
+            if (it->snapshot_data.filament_change && it->snapshot_data.filament_change->complete) {
+                filament_change = it->snapshot_data.filament_change;
+                break;
+            }
+        }
+    } else {
+        for (auto it = it_active; it != it_snapshot; ++it) {
+            if (it->snapshot_data.filament_change && it->snapshot_data.filament_change->complete)
+                filament_change = it->snapshot_data.filament_change;
+        }
+    }
+
     bool 				temp_snapshot_was_taken 	= this->undo_redo_stack().temp_snapshot_active();
     PrinterTechnology 	new_printer_technology 		= it_snapshot->snapshot_data.printer_technology;
     bool 				printer_technology_changed 	= this->printer_technology != new_printer_technology;
@@ -16115,9 +16263,14 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
     if (!canvas) return;
     
     bool is_assemble = canvas->get_canvas_type() == GLCanvas3D::CanvasAssembleView;
-    if (it_snapshot->timestamp < this->undo_redo_stack().active_snapshot_time() ?
+    if (undoing ?
         this->undo_redo_stack().undo(model, is_assemble ? assemble_view->get_canvas3d()->get_selection() : this->view3D->get_canvas3d()->get_selection(), is_assemble ? assemble_view->get_canvas3d()->get_gizmos_manager() : this->view3D->get_canvas3d()->get_gizmos_manager(), this->partplate_list, top_snapshot_data, it_snapshot->timestamp) :
         this->undo_redo_stack().redo(model, is_assemble ? assemble_view->get_canvas3d()->get_gizmos_manager() : this->view3D->get_canvas3d()->get_gizmos_manager(), this->partplate_list, it_snapshot->timestamp)) {
+        if (filament_change) {
+            restore_filament_state(undoing ? filament_change->before : filament_change->after,
+                                   filament_change->project_config_keys,
+                                   filament_change->full_config_keys);
+        }
         if (printer_technology_changed) {
             // Switch to the other printer technology. Switch to the last printer active for that particular technology.
             AppConfig *app_config = wxGetApp().app_config;
@@ -16184,6 +16337,8 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
             this->sidebar->obj_list()->set_selected_layers_range_idx(layer_range_idx);
 
         this->update_after_undo_redo(snapshot_copy, temp_snapshot_was_taken);
+        if (filament_change)
+            refresh_filaments_after_undo_redo();
         // Enable layer editing after the Undo / Redo jump.
         if (!view3D->is_layers_editing_enabled() && this->layers_height_allowed() && new_variable_layer_editing_active)
             view3D->get_canvas3d()->force_main_toolbar_left_action(view3D->get_canvas3d()->get_main_toolbar_item_id("layersediting"));
@@ -20689,6 +20844,8 @@ void Plater::take_snapshot(const std::string &snapshot_name) { p->take_snapshot(
 //void Plater::take_snapshot(const wxString &snapshot_name) { p->take_snapshot(snapshot_name); }
 void Plater::take_snapshot(const std::string &snapshot_name, UndoRedo::SnapshotType snapshot_type) { p->take_snapshot(snapshot_name, snapshot_type); }
 //void Plater::take_snapshot(const wxString &snapshot_name, UndoRedo::SnapshotType snapshot_type) { p->take_snapshot(snapshot_name, snapshot_type); }
+void Plater::begin_filament_snapshot(const std::string &snapshot_name) { p->begin_filament_snapshot(snapshot_name); }
+void Plater::finish_filament_snapshot() { p->finish_filament_snapshot(); }
 void Plater::suppress_snapshots() { p->suppress_snapshots(); }
 void Plater::allow_snapshots() { p->allow_snapshots(); }
 // BBS: single snapshot

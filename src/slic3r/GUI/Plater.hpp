@@ -813,6 +813,27 @@ public:
 		Plater *m_plater;
 	};
 
+    // RAII wrapper for a single undoable operation which changes both the
+    // Model and the project filament configuration.
+    class TakeFilamentSnapshot
+    {
+    public:
+        TakeFilamentSnapshot(Plater *plater, const std::string &snapshot_name) : m_plater(plater)
+        {
+            m_plater->begin_filament_snapshot(snapshot_name);
+            m_plater->suppress_snapshots();
+        }
+
+        ~TakeFilamentSnapshot()
+        {
+            m_plater->finish_filament_snapshot();
+            m_plater->allow_snapshots();
+        }
+
+    private:
+        Plater *m_plater;
+    };
+
     // BBS: limit to single snapshot taking by the methods called from inside
     // this snapshot.
     class SingleSnapshot
@@ -908,6 +929,8 @@ private:
 
     void suppress_snapshots();
     void allow_snapshots();
+    void begin_filament_snapshot(const std::string &snapshot_name);
+    void finish_filament_snapshot();
     // BBS: single snapshot
     void single_snapshots_enter(SingleSnapshot *single);
     void single_snapshots_leave(SingleSnapshot *single);
