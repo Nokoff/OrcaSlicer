@@ -53,8 +53,9 @@ constexpr const char *g_disabledText   = "#6B6A6A";
 
 // Tolerance presets for "merge similar", as CIEDE2000 distances. Roughly:
 // 2.5 is the threshold where a side-by-side difference stops being obvious,
-// 6 keeps a colour family together, 12 lumps in anything broadly alike.
-constexpr float g_toleranceDeltaE[] = {2.5f, 6.0f, 12.0f};
+// 6 keeps a colour family together, 12 lumps in anything broadly alike, and
+// 25 allows substantially different shades to merge as a last-resort option.
+constexpr float g_toleranceDeltaE[] = {2.5f, 6.0f, 12.0f, 25.0f};
 constexpr int   g_toleranceDefault  = 1;
 
 } // namespace
@@ -211,7 +212,7 @@ MergeFilamentsDialog::MergeFilamentsDialog(wxWindow                        *pare
 
     // --- Mode-specific control ---
     if (m_mode == Mode::Similar) {
-        std::vector<wxString> options = {_L("Strict"), _L("Balanced"), _L("Loose")};
+        std::vector<wxString> options = {_L("Strict"), _L("Balanced"), _L("Loose"), _L("Very Loose")};
         m_pTolerance                  = new SegmentedToggle(this, options, m_toleranceIndex);
         m_pTolerance->bindSelectionCallback([this](int index) {
             m_toleranceIndex = index;
