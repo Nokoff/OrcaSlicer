@@ -219,10 +219,18 @@ public:
     // Whether strokes of this gizmo are synchronized in a collaboration
     // session (currently only multi-material color painting).
     virtual bool is_collab_paint_gizmo() const { return false; }
+    // Filament colour currently selected in this gizmo, broadcast to the other
+    // collaborators so they can see what colour we are painting with. The
+    // palette lives in the derived gizmo, so the base class asks for it here.
+    virtual ColorRGBA get_collab_paint_color() const { return ColorRGBA(0.5f, 0.5f, 0.5f, 1.0f); }
 
 protected:
     // Renders the brush cursors of remote collaboration users.
     void render_collab_cursors();
+    // Renders the 2D presence overlay listing who is currently painting and
+    // which filament colour they have selected. Must be called from an ImGui
+    // pass, not from the 3D render pass.
+    void render_collab_overlay();
     virtual void render_triangles(const Selection& selection) const;
     void render_cursor();
     void render_cursor_circle();

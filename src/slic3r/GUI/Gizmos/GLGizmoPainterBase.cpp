@@ -9,6 +9,8 @@
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/OpenGLManager.hpp"
 #include "slic3r/GUI/Collab/CollabSession.hpp"
+#include "slic3r/GUI/ImGuiWrapper.hpp"
+#include "slic3r/GUI/I18N.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -326,6 +328,70 @@ void GLGizmoPainterBase::render_collab_cursors()
     }
 
     shader->stop_using();
+}
+
+void GLGizmoPainterBase::render_collab_overlay()
+{
+    if (!this->is_collab_paint_gizmo())
+        return;
+    Collab::CollabSession *collab = Collab::CollabSessionManager::get();
+    if (collab == nullptr)
+        return;
+
+    // remote_cursors() drops entries older than the stale timeout, and cursors
+    // are only broadcast while a stroke is being dragged -- so a live entry
+    // already means "painting right now" and needs no extra state to track.
+    const std::vector<Collab::CollabSession::RemoteCursor> cursors = collab->remote_cursors();
+    if (cursors.empty())
+        return;
+
+    // Position against the canvas, not ImGui::GetIO().DisplaySize: the display
+    // size is in framebuffer pixels, so on a scaled display it overshoots the
+    // canvas width and puts the panel off the right edge. Every other gizmo
+    // window in the codebase measures against get_canvas_size() for this reason.
+    const float canvas_w = float(m_parent.get_canvas_size().get_width());
+    const float margin   = 10.0f * m_parent.get_scale();
+
+    BOOST_LOG_TRIVIAL(warning) << "CollabOverlay: " << cursors.size() << " active painter(s), canvas width "
+                               << canvas_w << ", anchoring at x=" << (canvas_w - margin);
+
+    // Pivot (1,0) anchors the window by its own top-right corner, so it grows
+    // leftward as names get longer instead of running off the edge.
+    m_imgui->set_next_window_pos(canvas_w - margin, margin, ImGuiCond_Always, 1.0f, 0.0f);
+    ImGui::SetNextWindowBgAlpha(0.75f);
+
+    if (m_imgui->begin(std::string("##collab_presence"),
+                       ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize |
+                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs)) {
+        const ImGuiStyle &style = ImGui::GetStyle();
+
+        for (const Collab::CollabSession::RemoteCursor &cursor : cursors) {
+            ImDrawList  *draw_list = ImGui::GetWindowDrawList();
+            const float  height    = ImGui::GetTextLineHeight();
+            const ImVec2 row_pos   = ImGui::GetCursorScreenPos();
+
+            // Identity dot, matching the tint of this user's 3D brush sphere.
+            const float dot_r = height * 0.28f;
+            draw_list->AddCircleFilled(ImVec2(row_pos.x + dot_r, row_pos.y + height * 0.5f), dot_r,
+                                       ImGuiWrapper::to_ImU32(cursor.color));
+
+            ImGui::SetCursorScreenPos(ImVec2(row_pos.x + dot_r * 2.0f + style.ItemSpacing.x, row_pos.y));
+            ImGui::Text("%s", cursor.name.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", _u8L("is painting with").c_str());
+            ImGui::SameLine();
+
+            // Filament swatch, drawn the same way as the gizmo's own picker.
+            const ImVec2 swatch_pos = ImGui::GetCursorScreenPos();
+            const ImVec2 swatch_end(swatch_pos.x + height + height / 2, swatch_pos.y + height);
+            draw_list->AddRectFilled(swatch_pos, swatch_end, ImGuiWrapper::to_ImU32(cursor.paint_color));
+            draw_list->AddRect(swatch_pos, swatch_end, IM_COL32_BLACK);
+            ImGui::Dummy(ImVec2(height + height / 2, height));
+        }
+    }
+    m_imgui->end();
 }
 
 // BBS
@@ -887,7 +953,7 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
             if (collab != nullptr) {
                 collab->paint_progress({collab_obj_idx, mesh_idx}, *m_triangle_selectors[mesh_idx]);
                 const Vec3d world_hit = trafo_matrix * projected_mouse_positions.back().mesh_hit.cast<double>();
-                collab->send_cursor(world_hit, double(m_cursor_radius));
+                collab->send_cursor(world_hit, double(m_cursor_radius), this->get_collab_paint_color());
             }
 
             m_last_mouse_click = _mouse_position;

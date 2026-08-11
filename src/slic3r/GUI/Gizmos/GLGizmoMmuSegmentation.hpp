@@ -83,6 +83,12 @@ public:
 
     // Collaborative painting: color strokes are synchronized in a session.
     bool is_collab_paint_gizmo() const override { return true; }
+    ColorRGBA get_collab_paint_color() const override
+    {
+        if (m_selected_extruder_idx < m_extruders_colors.size())
+            return m_extruders_colors[m_selected_extruder_idx];
+        return ColorRGBA(0.5f, 0.5f, 0.5f, 1.0f);
+    }
     // Reloads the triangle selector of one model-part volume from remotely
     // received paint data (indexed among model-part volumes only).
     void collab_update_volume(int vol_idx, const TriangleSelector::TriangleSplittingData &data);

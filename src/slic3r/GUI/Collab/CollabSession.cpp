@@ -30,6 +30,7 @@ static constexpr auto CURSOR_SEND_INTERVAL   = std::chrono::milliseconds(100);
 static constexpr auto CURSOR_STALE_TIMEOUT   = std::chrono::seconds(3);
 
 std::shared_ptr<CollabSession> CollabSessionManager::s_session;
+std::string                    CollabSessionManager::s_last_end_reason;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -83,6 +84,7 @@ CollabSession *CollabSessionManager::start_hosting(const std::string &user_name,
         error = _u8L("A collaboration session is already active.");
         return nullptr;
     }
+    s_last_end_reason.clear();
     std::shared_ptr<CollabSession> session(new CollabSession(CollabSession::Role::Host));
     if (!session->start_hosting(user_name, error))
         return nullptr;
@@ -101,6 +103,7 @@ CollabSession *CollabSessionManager::join(const std::string &link_str, const std
         error = _u8L("Invalid invite link.");
         return nullptr;
     }
+    s_last_end_reason.clear();
     std::shared_ptr<CollabSession> session(new CollabSession(CollabSession::Role::Guest));
     if (!session->start_joining(*link, user_name, error))
         return nullptr;
@@ -274,7 +277,11 @@ void CollabSession::handle_server_message(int client_id, const json &msg)
         if (msg.value("token", std::string()) != m_token) {
             BOOST_LOG_TRIVIAL(warning) << "CollabSession: rejecting client " << client_id
                                        << ": invalid session token (the invite link is stale if the session was restarted)";
-            m_server->send_to(client_id, json{{"type", MsgType::Error}, {"message", "Invalid session token."}}.dump());
+            m_server->send_to(client_id, json{{"type", MsgType::Error},
+                                              {"message", "Invalid session token. The host generates a new link every "
+                                                          "time a session starts, so this one is from an older "
+                                                          "session -- ask the host to copy a fresh invite link."}}
+                                             .dump());
             m_server->close_client(client_id);
             return;
         }
@@ -350,6 +357,9 @@ void CollabSession::handle_server_message(int client_id, const json &msg)
         cursor.user_id  = user_id;
         cursor.position = Vec3d(msg.value("x", 0.), msg.value("y", 0.), msg.value("z", 0.));
         cursor.radius   = msg.value("r", 1.);
+        // Mid-grey fallback keeps the swatch readable if an older peer omits it.
+        cursor.paint_color = ColorRGBA(float(msg.value("pr", 0.5)), float(msg.value("pg", 0.5)),
+                                       float(msg.value("pb", 0.5)), 1.0f);
         if (auto it = m_users.find(user_id); it != m_users.end()) {
             cursor.name  = it->second.name;
             cursor.color = it->second.color;
@@ -516,6 +526,9 @@ void CollabSession::handle_client_message(const json &msg)
         cursor.user_id  = user_id;
         cursor.position = Vec3d(msg.value("x", 0.), msg.value("y", 0.), msg.value("z", 0.));
         cursor.radius   = msg.value("r", 1.);
+        // Mid-grey fallback keeps the swatch readable if an older peer omits it.
+        cursor.paint_color = ColorRGBA(float(msg.value("pr", 0.5)), float(msg.value("pg", 0.5)),
+                                       float(msg.value("pb", 0.5)), 1.0f);
         if (auto it = m_users.find(user_id); it != m_users.end()) {
             cursor.name  = it->second.name;
             cursor.color = it->second.color;
@@ -611,7 +624,7 @@ void CollabSession::end_stroke()
     m_blocked_volumes.clear();
 }
 
-void CollabSession::send_cursor(const Vec3d &world_position, double radius)
+void CollabSession::send_cursor(const Vec3d &world_position, double radius, const ColorRGBA &paint_color)
 {
     if (!m_active)
         return;
@@ -621,7 +634,8 @@ void CollabSession::send_cursor(const Vec3d &world_position, double radius)
     m_last_cursor_send = now;
     const json msg = {{"type", MsgType::Cursor}, {"user", m_my_user_id},
                       {"x", world_position.x()}, {"y", world_position.y()}, {"z", world_position.z()},
-                      {"r", radius}};
+                      {"r", radius},
+                      {"pr", paint_color.r()}, {"pg", paint_color.g()}, {"pb", paint_color.b()}};
     send_to_host_or_broadcast(msg);
 }
 
@@ -899,6 +913,10 @@ void CollabSession::release_claims_of_user(int user_id, bool broadcast_msg)
 void CollabSession::end_session_with_notice(const std::string &reason)
 {
     notify(reason);
+    // Recorded so the session dialog can show why this ended instead of the
+    // generic "session has ended", and so a failed join can report the cause
+    // in a box the user has to dismiss. A toast alone is too easy to miss.
+    CollabSessionManager::set_last_end_reason(reason);
     // Defer: we may be inside one of this session's own callbacks.
     wxGetApp().CallAfter([]() { CollabSessionManager::stop(); });
     m_active = false;

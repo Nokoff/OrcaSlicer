@@ -958,6 +958,10 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
 
     // BBS
     ImGuiWrapper::pop_toolbar_style();
+
+    // Drawn after the toolbar style is popped so the presence overlay uses
+    // default ImGui styling instead of inheriting the gizmo panel's.
+    render_collab_overlay();
 }
 
 

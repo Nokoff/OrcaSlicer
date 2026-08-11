@@ -26,6 +26,11 @@ namespace GUI {
 
 namespace UndoRedo {
 
+// Opaque GUI-owned state attached to snapshots for operations which change the
+// filament configuration as well as the serialized Model.  UndoRedo only keeps
+// the shared object alive; Plater captures and restores its contents.
+struct FilamentChange;
+
 enum class SnapshotType : unsigned char {
 	// Some action modifying project state, outside any EnteringGizmo / LeavingGizmo interval.
 	Action,
@@ -57,6 +62,7 @@ struct SnapshotData
 	// Bitmap of Flags (see the Flags enum).
 	unsigned int        flags { 0 };
     int                 layer_range_idx { -1 };
+    std::shared_ptr<FilamentChange> filament_change;
 
 	// Bitmask of various binary flags to be stored with the snapshot.
 	enum Flags {

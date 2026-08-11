@@ -42,7 +42,13 @@ public:
     {
         int         user_id = -1;
         std::string name;
+        // Identity colour of the user, from user_color_for_id().
         ColorRGBA   color;
+        // Filament colour the user currently has selected. Sent as RGB rather
+        // than a filament index: an index would be resolved against the local
+        // palette, which would silently show the wrong colour if the palettes
+        // ever diverged.
+        ColorRGBA   paint_color;
         Vec3d       position = Vec3d::Zero();
         double      radius   = 1.;
         std::chrono::steady_clock::time_point last_update;
@@ -67,8 +73,9 @@ public:
     void paint_progress(const VolumeKey &key, const TriangleSelector &selector);
     // Called on mouse-up after the gizmo stored the stroke into the model.
     void end_stroke();
-    // Throttled broadcast of the local brush position (world coordinates).
-    void send_cursor(const Vec3d &world_position, double radius);
+    // Throttled broadcast of the local brush position (world coordinates) and
+    // the filament colour currently selected in the paint gizmo.
+    void send_cursor(const Vec3d &world_position, double radius, const ColorRGBA &paint_color);
 
     // Broadcasts every volume whose paint annotation changed since the last
     // sync, and restores remote users' paint reverted by a local undo/redo.
@@ -187,8 +194,16 @@ public:
     // Same, but pops a user notification when locked. Returns scene_locked().
     static bool scene_locked_with_notice();
 
+    // Why the last session ended, or empty if it ended cleanly. Outlives the
+    // session object so dialogs can still explain the failure after the
+    // session has been torn down; cleared when a new session starts.
+    static const std::string &last_end_reason() { return s_last_end_reason; }
+    static void               set_last_end_reason(const std::string &reason) { s_last_end_reason = reason; }
+    static void               clear_last_end_reason() { s_last_end_reason.clear(); }
+
 private:
     static std::shared_ptr<CollabSession> s_session;
+    static std::string                    s_last_end_reason;
     friend class CollabSession;
 };
 

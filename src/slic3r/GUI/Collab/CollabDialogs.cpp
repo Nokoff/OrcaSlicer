@@ -98,7 +98,11 @@ void SessionInfoDialog::refresh(wxTimerEvent &)
 {
     CollabSession *session = CollabSessionManager::get();
     if (session == nullptr) {
-        m_status_label->SetLabel(_L("The session has ended."));
+        // Prefer the recorded cause: "the session has ended" is true but
+        // useless, and it was previously replacing the only accurate message
+        // the user got (a toast that had already timed out).
+        const std::string &reason = CollabSessionManager::last_end_reason();
+        m_status_label->SetLabel(reason.empty() ? _L("The session has ended.") : wxString::FromUTF8(reason));
         m_user_list->Clear();
         return;
     }
@@ -208,8 +212,18 @@ void join_session_from_menu(wxWindow *parent)
         return;
     }
     JoinSessionDialog dialog(parent);
-    if (dialog.ShowModal() == wxID_OK)
-        show_session_info(parent);
+    if (dialog.ShowModal() != wxID_OK)
+        return;
+    show_session_info(parent);
+
+    // The handshake completes asynchronously, so a rejected token or version
+    // only surfaces after the join dialog has closed. The user explicitly asked
+    // to connect, so a failure needs an acknowledgement rather than a toast.
+    if (!CollabSessionManager::is_active()) {
+        const std::string &reason = CollabSessionManager::last_end_reason();
+        if (!reason.empty())
+            wxMessageBox(wxString::FromUTF8(reason), _L("Join Collaboration Session"), wxICON_ERROR | wxOK, parent);
+    }
 }
 
 void show_session_info(wxWindow *parent)
