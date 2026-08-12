@@ -1,0 +1,82 @@
+name: Release
+
+# Builds the Windows installer and attaches it to a GitHub Release on this repo.
+# Pushing a v* tag is the normal path; workflow_dispatch is there for re-runs and
+# for cutting a release without moving a tag first.
+#
+# The release is created as a DRAFT so a stray tag can never publish on its own.
+# Review the assets on the Releases page and hit Publish. To make tags publish
+# straight away, set draft: false in the "Publish GitHub release" step below.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish the release under (e.g. v2.3.5-nokoff.1)'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Windows
+    # Reuses the same chain the nightly build uses: check dep cache -> build deps
+    # if needed -> build slicer, cpack the NSIS installer and upload it as an artifact.
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: windows-2022
+      build-deps-only: false
+    secrets: inherit
+
+  publish:
+    name: Publish release
+    needs: build
+    # The build chain ends with a sentry_cli job that needs secrets this fork may not
+    # have. Don't let that stop the release - if the installer really is missing, the
+    # download step below fails loudly instead.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve version and tag
+        id: vars
+        run: |
+          # Must match the artifact name build_orca.yml derives from version.inc.
+          ver_pure=$(grep 'set(Snapmaker_VERSION' version.inc | cut -d '"' -f2)
+          echo "ver=V$ver_pure" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      - name: Download Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: Snapmaker_Orca_Windows_${{ steps.vars.outputs.ver }}
+          path: dist
+
+      - name: Show what will be released
+        run: ls -lh dist
+        shell: bash
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: Snapmaker Orca ${{ steps.vars.outputs.tag }}
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*.exe
