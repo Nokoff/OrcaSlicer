@@ -577,6 +577,53 @@ void Selection::set_printable(bool printable)
     wxGetApp().plater()->update();
 }
 
+//BBS
+bool Selection::get_auto_drop() const
+{
+    if (!m_valid)
+        return true;
+
+    // return false if any instance of any selected object has auto drop disabled, true otherwise
+    for (ObjectIdxsToInstanceIdxsMap::const_iterator obj_it = m_cache.content.begin(); obj_it != m_cache.content.end(); ++obj_it) {
+        if (obj_it->first < 0 || obj_it->first >= (int)m_model->objects.size())
+            continue;
+
+        const ModelObject* object = m_model->objects[obj_it->first];
+        for (const ModelInstance* inst : object->instances) {
+            if (!inst->auto_drop)
+                return false;
+        }
+    }
+
+    return true;
+}
+
+void Selection::set_auto_drop(bool enabled)
+{
+    if (!m_valid)
+        return;
+
+    std::string snapshot_text = (boost::format("%1%") % (enabled ? "Enable Auto Drop" : "Disable Auto Drop")).str();
+    wxGetApp().plater()->take_snapshot(snapshot_text);
+
+    // set auto drop value for all instances in object
+    for (ObjectIdxsToInstanceIdxsMap::const_iterator obj_it = m_cache.content.begin(); obj_it != m_cache.content.end(); ++obj_it) {
+        if (obj_it->first < 0 || obj_it->first >= (int)m_model->objects.size())
+            continue;
+
+        ModelObject* object = m_model->objects[obj_it->first];
+        for (ModelInstance* inst : object->instances)
+            inst->auto_drop = enabled;
+
+        // when re-enabling, put the object back onto the bed
+        if (enabled)
+            object->ensure_on_bed();
+    }
+
+    // update scene
+    wxGetApp().plater()->update();
+}
+
 void Selection::add_all()
 {
     if (!m_valid)
@@ -1920,7 +1967,7 @@ void Selection::render(float scale_factor)
     m_scale_factor = scale_factor;
     // render cumulative bounding box of selected volumes
     const auto& [box, trafo] = get_bounding_box_in_current_reference_system();
-    render_bounding_box(box, trafo, 
+    render_bounding_box(box, trafo, get_auto_drop(),
         wxGetApp().plater()->canvas3D()->get_canvas_type() == GLCanvas3D::ECanvasType::CanvasAssembleView ? ColorRGB::YELLOW(): ColorRGB::WHITE());
     render_synchronized_volumes();
 }
@@ -2523,26 +2570,30 @@ void Selection::render_synchronized_volumes()
                 box = v.transformed_convex_hull_bounding_box(v.get_volume_transformation().get_matrix());
                 trafo = v.get_instance_transformation().get_matrix();
             }
-            render_bounding_box(box, trafo, ColorRGB::YELLOW());
+            render_bounding_box(box, trafo, get_auto_drop(), ColorRGB::YELLOW());
         }
     }
 }
 
-void Selection::render_bounding_box(const BoundingBoxf3& box, const Transform3d& trafo, const ColorRGB& color)
+void Selection::render_bounding_box(const BoundingBoxf3& box, const Transform3d& trafo, const bool auto_drop, const ColorRGB& color)
 {
     const BoundingBoxf3& curr_box = m_box.get_bounding_box();
 
-    if (!m_box.is_initialized() || !is_approx(box.min, curr_box.min) || !is_approx(box.max, curr_box.max)) {
+    if (!m_box.is_initialized() || !is_approx(box.min, curr_box.min) || !is_approx(box.max, curr_box.max) || m_box_auto_drop != auto_drop) {
         m_box.reset();
+        m_box_auto_drop = auto_drop;
 
         const Vec3f b_min = box.min.cast<float>();
         const Vec3f b_max = box.max.cast<float>();
         const Vec3f size = 0.2f * box.size().cast<float>();
 
+        //BBS: 48 vertices for the corner brackets, 24 more for the arrows shown when auto drop is disabled
+        const unsigned int vertices_count = auto_drop ? 48 : 72;
+
         GLModel::Geometry init_data;
         init_data.format = { GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3 };
-        init_data.reserve_vertices(48);
-        init_data.reserve_indices(48);
+        init_data.reserve_vertices(vertices_count);
+        init_data.reserve_indices(vertices_count);
 
         // vertices
         init_data.add_vertex(Vec3f(b_min.x(), b_min.y(), b_min.z()));
@@ -2601,8 +2652,39 @@ void Selection::render_bounding_box(const BoundingBoxf3& box, const Transform3d&
         init_data.add_vertex(Vec3f(b_min.x(), b_max.y(), b_max.z()));
         init_data.add_vertex(Vec3f(b_min.x(), b_max.y(), b_max.z() - size.z()));
 
+        //BBS: mark a selection which is not dropped onto the plate with an arrow below each bottom corner
+        if (!auto_drop) {
+            const float head_size = 2.0f * m_scale_factor; // width of the arrow head wings
+            const float z_gap     = 1.0f * m_scale_factor; // gap between the box and the arrow tip
+            const float arrow_h   = 5.0f * m_scale_factor; // height of the arrow stem
+
+            const std::array<Vec3f, 4> corners = { Vec3f(b_min.x(), b_min.y(), b_min.z()),
+                                                   Vec3f(b_max.x(), b_min.y(), b_min.z()),
+                                                   Vec3f(b_max.x(), b_max.y(), b_min.z()),
+                                                   Vec3f(b_min.x(), b_max.y(), b_min.z()) };
+
+            for (const Vec3f& corner : corners) {
+                const Vec3f tip(corner.x(), corner.y(), corner.z() - z_gap);
+                const Vec3f base(corner.x(), corner.y(), tip.z() - arrow_h);
+
+                // stem
+                init_data.add_vertex(base);
+                init_data.add_vertex(tip);
+
+                // wings, pointing towards the center of the footprint
+                const float dir_x = (corner.x() == b_min.x()) ? head_size : -head_size;
+                const float dir_y = (corner.y() == b_min.y()) ? head_size : -head_size;
+
+                init_data.add_vertex(tip);
+                init_data.add_vertex(Vec3f(tip.x() + dir_x, tip.y(), tip.z() - head_size));
+
+                init_data.add_vertex(tip);
+                init_data.add_vertex(Vec3f(tip.x(), tip.y() + dir_y, tip.z() - head_size));
+            }
+        }
+
         // indices
-        for (unsigned int i = 0; i < 48; ++i) {
+        for (unsigned int i = 0; i < vertices_count; ++i) {
             init_data.add_index(i);
         }
 
@@ -2964,7 +3046,7 @@ void Selection::ensure_on_bed()
 
     for (size_t i = 0; i < m_volumes->size(); ++i) {
         GLVolume* volume = (*m_volumes)[i];
-        if (!volume->is_wipe_tower && !volume->is_modifier &&
+        if (!volume->is_wipe_tower && !volume->is_modifier && volume_auto_drop_enabled(*m_model, *volume) &&
             std::find(m_cache.sinking_volumes.begin(), m_cache.sinking_volumes.end(), i) == m_cache.sinking_volumes.end()) {
             const double min_z = volume->transformed_convex_hull_bounding_box().min.z();
             std::pair<int, int> instance = std::make_pair(volume->object_idx(), volume->instance_idx());

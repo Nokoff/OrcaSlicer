@@ -441,6 +441,8 @@ public:
     //update printable state for item from objects model
     void update_printable_state(int obj_idx, int instance_idx);
     void toggle_printable_state();
+    //BBS: toggle automatic dropping onto the build plate
+    void toggle_auto_drop();
 
     //BBS: remove const qualifier
     void set_extruder_for_selected_items(const int extruder);

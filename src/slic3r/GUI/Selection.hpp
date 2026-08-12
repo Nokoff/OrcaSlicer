@@ -181,6 +181,8 @@ private:
     GLModel m_arrow;
     GLModel m_curved_arrow;
     GLModel m_box;
+    // BBS: auto drop state the cached bounding box model was built for
+    bool m_box_auto_drop{ true };
     struct Planes
     {
         std::array<Vec3f, 2> check_points{ Vec3f::Zero(), Vec3f::Zero() };
@@ -237,6 +239,9 @@ public:
     void drop();
     void center_plate(const int plate_idx);
     void set_printable(bool printable);
+    // BBS: returns false if any instance of the selection has automatic dropping to the bed disabled
+    bool get_auto_drop() const;
+    void set_auto_drop(bool enabled);
 
     void add_all();
     void remove_all();
@@ -370,7 +375,7 @@ public:
 
     void render_bounding_box(const BoundingBoxf3& box, const ColorRGB& color, float scale) {
         m_scale_factor = scale;
-        render_bounding_box(box, Transform3d::Identity(), color);
+        render_bounding_box(box, Transform3d::Identity(), true, color);
     }
 
     //BBS
@@ -414,7 +419,7 @@ private:
         m_bounding_sphere.reset();
     }
     void render_synchronized_volumes();
-    void render_bounding_box(const BoundingBoxf3& box, const Transform3d& trafo, const ColorRGB& color);
+    void render_bounding_box(const BoundingBoxf3& box, const Transform3d& trafo, const bool auto_drop, const ColorRGB& color);
     void render_sidebar_position_hints(const std::string& sidebar_field, GLShaderProgram& shader, const Transform3d& matrix);
     void render_sidebar_rotation_hints(const std::string& sidebar_field, GLShaderProgram& shader, const Transform3d& matrix);
     //BBS: GUI refactor: add uniform_scale from gizmo

@@ -2263,6 +2263,10 @@ void GLCanvas3D::ensure_on_bed(unsigned int object_idx, bool allow_negative_z)
     InstancesToZMap instances_min_z;
 
     for (GLVolume* volume : m_volumes.volumes) {
+        //BBS: leave instances with auto drop disabled where the user put them
+        if (!volume_auto_drop_enabled(*m_model, *volume))
+            continue;
+
         if (volume->object_idx() == (int)object_idx && !volume->is_modifier) {
             double min_z = volume->transformed_convex_hull_bounding_box().min.z();
             std::pair<int, int> instance = std::make_pair(volume->object_idx(), volume->instance_idx());
@@ -4797,6 +4801,10 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
 
     // Fixes flying instances
     for (const std::pair<int, int>& i : done) {
+        //BBS: leave instances with auto drop disabled where the user put them
+        if (!instance_auto_drop_enabled(*m_model, i.first, i.second))
+            continue;
+
         ModelObject* m = m_model->objects[i.first];
         const double shift_z = m->get_instance_min_z(i.second);
         //BBS: don't call translate if the z is zero
@@ -4915,6 +4923,10 @@ void GLCanvas3D::do_rotate(const std::string& snapshot_type)
     if (m_canvas_type != CanvasAssembleView) {
         // Fixes sinking/flying instances
         for (const std::pair<int, int> &i : done) {
+            //BBS: leave instances with auto drop disabled where the user put them
+            if (!instance_auto_drop_enabled(*m_model, i.first, i.second))
+                continue;
+
             ModelObject *m = m_model->objects[i.first];
 
             // BBS: don't call translate if the z is zero
@@ -5006,6 +5018,10 @@ void GLCanvas3D::do_scale(const std::string& snapshot_type)
 
     // Fixes sinking/flying instances
     for (const std::pair<int, int>& i : done) {
+        //BBS: leave instances with auto drop disabled where the user put them
+        if (!instance_auto_drop_enabled(*m_model, i.first, i.second))
+            continue;
+
         ModelObject* m = m_model->objects[i.first];
 
         //BBS: don't call translate if the z is zero
@@ -5115,6 +5131,10 @@ void GLCanvas3D::do_mirror(const std::string& snapshot_type)
 
     // Fixes sinking/flying instances
     for (const std::pair<int, int>& i : done) {
+        //BBS: leave instances with auto drop disabled where the user put them
+        if (!instance_auto_drop_enabled(*m_model, i.first, i.second))
+            continue;
+
         ModelObject* m = m_model->objects[i.first];
 
         //BBS: don't call translate if the z is zero

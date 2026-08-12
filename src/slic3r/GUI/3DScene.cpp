@@ -12,6 +12,7 @@
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
 #include "libslic3r/Geometry.hpp"
+#include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/SLAPrint.hpp"
 #include "libslic3r/Slicing.hpp"
@@ -614,6 +615,24 @@ bool GLVolume::is_sinking() const
 }
 
 bool GLVolume::is_below_printbed() const { return transformed_convex_hull_bounding_box().max.z() < 0.0; }
+
+bool instance_auto_drop_enabled(const Model& model, int object_idx, int instance_idx)
+{
+    // wipe tower proxies use object indices >= 1000, they have no model instance
+    if (object_idx < 0 || object_idx >= (int) model.objects.size())
+        return true;
+
+    const ModelObject* model_object = model.objects[object_idx];
+    if (instance_idx < 0 || instance_idx >= (int) model_object->instances.size())
+        return true;
+
+    return model_object->instances[instance_idx]->auto_drop;
+}
+
+bool volume_auto_drop_enabled(const Model& model, const GLVolume& volume)
+{
+    return instance_auto_drop_enabled(model, volume.object_idx(), volume.instance_idx());
+}
 
 void GLVolume::render_sinking_contours() { m_sinking_contours.render(); }
 
