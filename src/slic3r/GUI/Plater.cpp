@@ -162,6 +162,7 @@
 #include "Widgets/DialogButtons.hpp"
 #include "Widgets/CheckBox.hpp"
 #include "Widgets/Button.hpp"
+#include "Widgets/SashBar.hpp"
 
 #include "GUI_ObjectTable.hpp"
 #include "libslic3r/Thread.hpp"
@@ -1050,6 +1051,14 @@ struct Sidebar::priv
     ObjectList          *m_object_list{ nullptr };
     ObjectSettings      *object_settings{ nullptr };
     ObjectLayers        *object_layers{ nullptr };
+
+    // ORCA: draggable split between the object list and the parameters below it.
+    // m_object_pane_height is 0 while the default proportional split is in use.
+    SashBar             *m_object_pane_sash{ nullptr };
+    wxWindow            *m_params_pane{ nullptr };
+    int                  m_object_pane_height{ 0 };  // height the user asked for
+    int                  m_object_pane_applied{ 0 }; // height currently in effect
+    int                  m_object_pane_drag_from{ 0 }; // object list height when the drag started
 
     wxButton *btn_export_gcode;
     wxButton *btn_reslice;
@@ -2766,9 +2775,20 @@ Sidebar::Sidebar(Plater *parent)
         this->p->m_search_item->GetTextCtrl()->SetValue(""); // reset value when close
     });
 
+    // ORCA: let the list shrink below its best size so the pane stays usable on
+    // short screens and can be dragged small by the sash below it
+    p->m_object_list->SetMinSize(wxSize(1, FromDIP(60)));
+
     p->sizer_params->Add(p->m_search_bar, 0, wxALL | wxEXPAND, 0);
     p->sizer_params->Add(p->m_object_list, 1, wxEXPAND | wxTOP, 0);
     scrolled_sizer->Add(p->sizer_params, 2, wxEXPAND | wxLEFT, 0);
+
+    // ORCA: draggable sash that redistributes the vertical space between the
+    // object list above and the parameter panel below
+    p->m_object_pane_sash = new SashBar(p->scrolled);
+    p->m_object_pane_sash->Hide();
+    scrolled_sizer->Add(p->m_object_pane_sash, 0, wxEXPAND);
+
     p->m_object_list->Hide();
     p->m_search_bar->Hide();
     // Frequently Object Settings
@@ -2782,8 +2802,36 @@ Sidebar::Sidebar(Plater *parent)
     if (params_panel) {
         params_panel->Reparent(p->scrolled);
         scrolled_sizer->Add(params_panel, 3, wxEXPAND);
+        p->m_params_pane = params_panel;
     }
 #endif
+
+    // ORCA: hook the sash up to the object list / parameter panel split
+    p->m_object_pane_sash->SetOnDragBegin([this]() {
+        wxSizerItem *list_item = m_scrolled_sizer->GetItem(p->sizer_params);
+        p->m_object_pane_drag_from = list_item ? list_item->GetSize().y : 0;
+    });
+    p->m_object_pane_sash->SetOnDrag([this](int offset, bool finished) {
+        if (finished) {
+            wxGetApp().app_config->set("object_pane_height", std::to_string(p->m_object_pane_height));
+            return;
+        }
+        apply_object_pane_height(p->m_object_pane_drag_from + offset, true);
+    });
+    // double click restores the default split
+    p->m_object_pane_sash->SetOnReset([this]() {
+        apply_object_pane_height(0, true);
+        wxGetApp().app_config->set("object_pane_height", "0");
+    });
+
+    p->m_object_pane_height = std::max(0, atoi(wxGetApp().app_config->get("object_pane_height").c_str()));
+
+    // the stored height has to be re-clamped whenever the sidebar itself changes height
+    p->scrolled->Bind(wxEVT_SIZE, [this](wxSizeEvent &evt) {
+        evt.Skip();
+        if (p->m_object_pane_height > 0 && p->m_object_pane_sash->IsShown())
+            apply_object_pane_height(p->m_object_pane_height, false);
+    });
     }
 
     p->object_layers = new ObjectLayers(p->scrolled);
@@ -3330,6 +3378,7 @@ void Sidebar::msw_rescale()
     p->m_search_item->Rescale();
     p->m_search_item->GetTextCtrl()->SetSize(wxSize(-1, FromDIP(16)));
     p->m_search_bar->Layout();
+    p->m_object_pane_sash->Rescale();
 
     // BBS
 #if 0
@@ -8829,6 +8878,55 @@ void Sidebar::update_ui_from_settings()
 #endif
 }
 
+// ORCA: Space the object list pane and the parameter pane below it currently
+// share. They are the only two stretchable items of the sidebar, so their sum
+// stays constant while the sash is dragged.
+int Sidebar::object_pane_room() const
+{
+    if (m_scrolled_sizer == nullptr || p->sizer_params == nullptr || p->m_params_pane == nullptr)
+        return 0;
+    wxSizerItem *list_item   = m_scrolled_sizer->GetItem(p->sizer_params);
+    wxSizerItem *params_item = m_scrolled_sizer->GetItem(p->m_params_pane);
+    if (list_item == nullptr || params_item == nullptr)
+        return 0;
+    return list_item->GetSize().y + params_item->GetSize().y;
+}
+
+// ORCA: Pin the object list pane to the given height and let the parameter pane
+// take whatever is left. A height of 0 restores the default proportional split.
+// The requested height is only remembered as the user's preference when it comes
+// from the sash; a height forced down by a shrinking window must not overwrite
+// it, otherwise the pane would not grow back when there is room again.
+void Sidebar::apply_object_pane_height(int height, bool remember) const
+{
+    if (m_scrolled_sizer == nullptr || p->sizer_params == nullptr)
+        return;
+    wxSizerItem *list_item = m_scrolled_sizer->GetItem(p->sizer_params);
+    if (list_item == nullptr)
+        return;
+
+    height = std::max(0, height);
+    if (height > 0) {
+        // both panes have to stay usable, no matter how short the screen is
+        const int min_list   = FromDIP(80);
+        const int min_params = FromDIP(120);
+        const int room       = object_pane_room();
+        if (room > 0)
+            height = std::min(height, std::max(min_list, room - min_params));
+        height = std::max(height, min_list);
+    }
+    if (remember)
+        p->m_object_pane_height = height;
+
+    if (height == p->m_object_pane_applied)
+        return;
+    p->m_object_pane_applied = height;
+
+    list_item->SetProportion(height > 0 ? 0 : 2);
+    p->sizer_params->SetMinSize(wxSize(-1, height > 0 ? height : -1));
+    p->scrolled->Layout();
+}
+
 bool Sidebar::show_object_list(bool show) const
 {
     p->m_search_bar->Show(show);
@@ -8838,7 +8936,13 @@ bool Sidebar::show_object_list(bool show) const
         p->object_layers->Show(false);
     else
         p->m_object_list->part_selection_changed();
+    // ORCA: the sash only makes sense while the object list shares the sidebar
+    // with the parameter panel
+    p->m_object_pane_sash->Show(show && p->m_params_pane != nullptr);
     p->scrolled->Layout();
+    // the pinned height only applies while the object list is up, otherwise it
+    // would reserve empty space for the hidden list
+    apply_object_pane_height(show ? p->m_object_pane_height : 0, false);
     return true;
 }
 

@@ -514,6 +514,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Widgets/RadioGroup.hpp
     GUI/Widgets/RoundedRectangle.cpp
     GUI/Widgets/RoundedRectangle.hpp
+    GUI/Widgets/SashBar.cpp
+    GUI/Widgets/SashBar.hpp
     GUI/Widgets/Scrollbar.cpp
     GUI/Widgets/Scrollbar.hpp
     GUI/Widgets/ScrolledWindow.cpp

@@ -217,6 +217,9 @@ public:
     void                    update_searcher();
     void                    update_ui_from_settings();
 	bool                    show_object_list(bool show) const;
+    // ORCA: vertical split between the object list and the parameter panel below it
+    void                    apply_object_pane_height(int height, bool remember) const;
+    int                     object_pane_room() const;
     void                    finish_param_edit();
     void                    auto_calc_flushing_volumes(const int modify_id);
     void                    jump_to_object(ObjectDataViewModelNode* item);
