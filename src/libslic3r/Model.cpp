@@ -1707,8 +1707,13 @@ void ModelObject::ensure_on_bed(bool allow_negative_z)
     else
         z_offset = -this->min_z();
 
-    if (z_offset != 0.0)
-        translate_instances(z_offset * Vec3d::UnitZ());
+    if (z_offset != 0.0) {
+        // Instances with auto_drop disabled keep their z position.
+        for (size_t i = 0; i < instances.size(); ++i) {
+            if (instances[i]->auto_drop)
+                translate_instance(i, z_offset * Vec3d::UnitZ());
+        }
+    }
 }
 
 void ModelObject::translate_instances(const Vec3d& vector)

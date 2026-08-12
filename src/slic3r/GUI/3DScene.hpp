@@ -53,6 +53,7 @@ class ExtrusionMultiPath;
 class ExtrusionLoop;
 class ExtrusionEntity;
 class ExtrusionEntityCollection;
+class Model;
 class ModelObject;
 class ModelVolume;
 class GLShaderProgram;
@@ -62,6 +63,12 @@ using ModelObjectPtrs = std::vector<ModelObject*>;
 
 // Return appropriate color based on the ModelVolume.
 extern ColorRGBA color_from_model_volume(const ModelVolume& model_volume);
+
+class GLVolume;
+// Returns false if the model instance should not be dropped onto the bed automatically.
+// Indices not pointing to a model instance (wipe tower proxies, ...) are reported as auto dropped.
+extern bool instance_auto_drop_enabled(const Model& model, int object_idx, int instance_idx);
+extern bool volume_auto_drop_enabled(const Model& model, const GLVolume& volume);
 
 class GLVolume {
 public:

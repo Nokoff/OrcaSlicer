@@ -2990,6 +2990,12 @@ void ObjectList::merge(bool to_multipart_object)
                     volume->config.set_key_value("extruder", option->clone());
             }
 
+            //BBS: carry over a disabled auto drop state, so merging does not snap parts back onto the plate
+            if (!object->instances.empty() && !object->instances[0]->auto_drop) {
+                for (auto inst : new_object->instances)
+                    inst->auto_drop = false;
+            }
+
             // merge layers
             for (const auto& range : object->layer_config_ranges)
                 new_object->layer_config_ranges.emplace(range);
@@ -6102,6 +6108,48 @@ void ObjectList::toggle_printable_state()
 
     // update printable state on canvas
     wxGetApp().plater()->get_view3D_canvas3D()->update_instance_printable_state_for_objects(obj_idxs);
+
+    // update scene
+    wxGetApp().plater()->update();
+    wxGetApp().plater()->reload_paint_after_background_process_apply();
+}
+
+//BBS: toggle automatic dropping of the selected objects/instances onto the build plate
+void ObjectList::toggle_auto_drop()
+{
+    wxDataViewItemArray sels;
+    GetSelections(sels);
+    if (sels.IsEmpty())
+        return;
+
+    ItemType frst_type = m_objects_model->GetItemType(sels[0]);
+    if (!(frst_type & (itObject | itInstance)))
+        return;
+
+    const bool auto_drop = !wxGetApp().plater()->get_selection().get_auto_drop();
+
+    take_snapshot("");
+
+    for (auto item : sels) {
+        ItemType type = m_objects_model->GetItemType(item);
+        if (!(type & (itObject | itInstance)))
+            continue;
+
+        ModelObject* obj = object(m_objects_model->GetObjectIdByItem(item));
+        if (obj == nullptr)
+            continue;
+
+        // set auto drop value for selected instance/instances in object
+        if (type == itInstance)
+            obj->instances[m_objects_model->GetInstanceIdByItem(item)]->auto_drop = auto_drop;
+        else
+            for (auto inst : obj->instances)
+                inst->auto_drop = auto_drop;
+
+        // when re-enabling, put the object back onto the bed
+        if (auto_drop)
+            obj->ensure_on_bed();
+    }
 
     // update scene
     wxGetApp().plater()->update();

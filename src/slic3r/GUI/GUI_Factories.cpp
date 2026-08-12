@@ -854,6 +854,21 @@ wxMenuItem* MenuFactory::append_menu_item_printable(wxMenu* menu)
     return menu_item_printable;
 }
 
+wxMenuItem* MenuFactory::append_menu_item_auto_drop(wxMenu* menu)
+{
+    wxMenuItem* menu_item_auto_drop = append_menu_check_item(menu, wxID_ANY, _L("Auto drop to plate"),
+        _L("Automatically drop the object onto the build plate. Disable to place the object freely along the Z axis."),
+        [](wxCommandEvent&) { obj_list()->toggle_auto_drop(); }, menu);
+
+    m_parent->Bind(wxEVT_UPDATE_UI, [](wxUpdateUIEvent& evt) {
+        evt.Check(plater()->get_selection().get_auto_drop());
+        plater()->set_current_canvas_as_dirty();
+
+        }, menu_item_auto_drop->GetId());
+
+    return menu_item_auto_drop;
+}
+
 void MenuFactory::append_menu_item_rename(wxMenu* menu)
 {
     append_menu_item(menu, wxID_ANY, _L("Rename"), "",
@@ -1375,6 +1390,7 @@ void MenuFactory::create_extra_object_menu()
     // Set filament insert menu item here
     // Set Printable
     wxMenuItem* menu_item_printable = append_menu_item_printable(&m_object_menu);
+    wxMenuItem* menu_item_auto_drop = append_menu_item_auto_drop(&m_object_menu);
     append_menu_item_per_object_process(&m_object_menu);
     // Enter per object parameters
     append_menu_item_per_object_settings(&m_object_menu);
@@ -1843,6 +1859,7 @@ wxMenu* MenuFactory::multi_selection_menu()
         menu->AppendSeparator();
 
         append_menu_item_set_printable(menu);
+        append_menu_item_set_auto_drop(menu);
         append_menu_item_per_object_process(menu);
         menu->AppendSeparator();
         append_menu_items_convert_unit(menu);
@@ -2134,6 +2151,23 @@ void MenuFactory::append_menu_item_set_printable(wxMenu* menu)
         plater()->set_current_canvas_as_dirty();
 
         }, menu_item_set_printable->GetId());
+}
+
+void MenuFactory::append_menu_item_set_auto_drop(wxMenu* menu)
+{
+    const bool all_auto_drop = plater()->canvas3D()->get_selection().get_auto_drop();
+
+    wxMenuItem* menu_item_set_auto_drop = append_menu_check_item(menu, wxID_ANY, _L("Auto drop to plate"),
+        _L("Automatically drop the objects onto the build plate. Disable to place them freely along the Z axis."),
+        [this, all_auto_drop](wxCommandEvent&) {
+            Selection& selection = plater()->canvas3D()->get_selection();
+            selection.set_auto_drop(!all_auto_drop);
+        }, menu);
+    m_parent->Bind(wxEVT_UPDATE_UI, [all_auto_drop](wxUpdateUIEvent& evt) {
+        evt.Check(all_auto_drop);
+        plater()->set_current_canvas_as_dirty();
+
+        }, menu_item_set_auto_drop->GetId());
 }
 
 void MenuFactory::append_menu_item_locked(wxMenu* menu)

@@ -9302,7 +9302,7 @@ struct Plater::priv
 
     // BBS: backup & restore
     std::vector<size_t> load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi = false);
-    std::vector<size_t> load_model_objects(const ModelObjectPtrs& model_objects, bool allow_negative_z = false, bool split_object = false);
+    std::vector<size_t> load_model_objects(const ModelObjectPtrs& model_objects, bool allow_negative_z = false, bool split_object = false, bool auto_drop = true);
 
     fs::path get_export_file_path(GUI::FileType file_type);
     wxString get_export_file(GUI::FileType file_type);
@@ -9334,6 +9334,8 @@ struct Plater::priv
     void drop_selection();
     void mirror(Axis axis);
     void split_object();
+    //BBS: split the given object, optionally keeping the resulting parts at their height
+    void split_object_by_idx(int obj_idx, bool auto_drop = true);
     void split_volume();
     void scale_selection_to_fit_print_volume();
 
@@ -11475,14 +11477,34 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
     if (new_model != nullptr && new_model->objects.size() > 1) {
         //BBS do not popup this dialog
 
+        bool auto_drop = true;
+        int  single_object_answer = wxID_NO;
         if (ask_multi) {
-            MessageDialog msg_dlg(q, _L("Load these files as a single object with multiple parts?\n"), _L("Object with multiple parts was detected"),
-                                  wxICON_WARNING | wxYES | wxNO);
-            if (msg_dlg.ShowModal() == wxID_YES) { new_model->convert_multipart_object(filaments_cnt); }
+            RichMessageDialog msg_dlg(q, _L("Load these files as a single object with multiple parts?\n"), _L("Object with multiple parts was detected"),
+                                      wxICON_QUESTION | wxYES_NO);
+            msg_dlg.ShowCheckBox(_L("Auto drop to plate"), true);
+            single_object_answer = msg_dlg.ShowModal();
+            auto_drop = msg_dlg.IsCheckBoxChecked();
+
+            //BBS: converting to a multipart object computes the relative positions of the parts. When auto drop is
+            //disabled we always convert first and split afterwards, so that the relative positions are kept.
+            if (single_object_answer == wxID_YES || !auto_drop)
+                new_model->convert_multipart_object(filaments_cnt);
         }
 
-        auto loaded_idxs = load_model_objects(new_model->objects);
+        auto loaded_idxs = load_model_objects(new_model->objects, false, false, auto_drop);
         obj_idxs.insert(obj_idxs.end(), loaded_idxs.begin(), loaded_idxs.end());
+
+        //BBS: the files were merged into a single object above to keep their relative positions, split them again
+        if (single_object_answer != wxID_YES && !auto_drop && !loaded_idxs.empty()) {
+            const size_t first_idx = loaded_idxs.front();
+            split_object_by_idx((int) first_idx, auto_drop);
+
+            // the merged object was replaced by its parts, which are appended at the end of the model
+            obj_idxs.resize(obj_idxs.size() - loaded_idxs.size());
+            for (size_t i = first_idx; i < model.objects.size(); ++i)
+                obj_idxs.push_back(i);
+        }
     }
 
     if (new_model) delete new_model;
@@ -11604,7 +11626,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
 
  #define AUTOPLACEMENT_ON_LOAD
 
-std::vector<size_t> Plater::priv::load_model_objects(const ModelObjectPtrs& model_objects, bool allow_negative_z, bool split_object)
+std::vector<size_t> Plater::priv::load_model_objects(const ModelObjectPtrs& model_objects, bool allow_negative_z, bool split_object, bool auto_drop)
 {
     const Vec3d bed_size = Slic3r::to_3d(this->bed.build_volume().bounding_volume2d().size(), 1.0) - 2.0 * Vec3d::Ones();
 
@@ -11670,7 +11692,18 @@ std::vector<size_t> Plater::priv::load_model_objects(const ModelObjectPtrs& mode
             }
         }
 
-        object->ensure_on_bed(allow_negative_z);
+        //BBS: objects loaded with auto drop disabled keep their relative height, they are only lifted if they reach below the bed
+        if (auto_drop)
+            object->ensure_on_bed(allow_negative_z);
+        else {
+            for (ModelInstance* instance : object->instances)
+                instance->auto_drop = false;
+
+            const double dist_to_bed = std::min(object->min_z(), 0.0);
+            if (dist_to_bed != 0.0)
+                object->translate_instances(Vec3d(0.0, 0.0, -dist_to_bed));
+        }
+
         if (!split_object) {
             //BBS initial assemble transformation
             for (ModelObject* model_object : model.objects) {
@@ -12211,7 +12244,11 @@ void Plater::find_new_position(const ModelInstancePtrs &instances)
 
 void Plater::priv::split_object()
 {
-    int obj_idx = get_selected_object_idx();
+    split_object_by_idx(get_selected_object_idx());
+}
+
+void Plater::priv::split_object_by_idx(int obj_idx, bool auto_drop)
+{
     if (obj_idx == -1)
         return;
 
@@ -12237,12 +12274,27 @@ void Plater::priv::split_object()
 
         Plater::TakeSnapshot snapshot(q, "Split to Objects");
 
+        //BBS: splitting an object which is dropped onto the plate would drop each of its parts separately,
+        //losing their relative height. Offer to keep the parts where they are instead.
+        bool split_auto_drop = auto_drop;
+        if (split_auto_drop && !current_model_object->instances.empty() && current_model_object->instances[0]->auto_drop) {
+            const bool any_floating = std::any_of(new_objects.begin(), new_objects.end(),
+                [](const ModelObject* new_object) { return new_object->get_instance_min_z(0) >= SINKING_MIN_Z_THRESHOLD; });
+
+            if (any_floating) {
+                MessageDialog dlg(q, _L("Some parts are floating above the plate. Disable auto drop to plate to keep them at their height?"),
+                                  _L("Object with floating parts was detected"), wxICON_QUESTION | wxYES_NO);
+                if (dlg.ShowModal() == wxID_YES)
+                    split_auto_drop = false;
+            }
+        }
+
         remove(obj_idx);
 
         // load all model objects at once, otherwise the plate would be rearranged after each one
         // causing original positions not to be kept
         //BBS: set split_object to true to avoid re-compute assemble matrix
-        std::vector<size_t> idxs = load_model_objects(new_objects, false, true);
+        std::vector<size_t> idxs = load_model_objects(new_objects, false, true, split_auto_drop);
 
         // select newly added objects
         for (size_t idx : idxs)
