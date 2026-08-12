@@ -249,6 +249,11 @@ protected:
     virtual EnforcerBlockerType get_left_button_state_type() const { return EnforcerBlockerType::ENFORCER; }
     virtual EnforcerBlockerType get_right_button_state_type() const { return EnforcerBlockerType::BLOCKER; }
 
+    // Orca: states the next paint operation is allowed to overwrite on the given mesh. An empty
+    // list (the default) paints over everything. Derived gizmos return a non-empty list to offer
+    // a "replace this filament only" mode, which the base class applies for the paint operation.
+    virtual std::vector<EnforcerBlockerType> get_replace_filter_states(int /* mesh_idx */) const { return {}; }
+
     float m_cursor_radius = 1.f;
     // BBS
     float m_cursor_height = 0.2f;

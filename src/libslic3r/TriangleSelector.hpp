@@ -374,6 +374,14 @@ public:
     // The operation may merge split triangles if they are being assigned the same color.
     void seed_fill_apply_on_triangles(EnforcerBlockerType new_state);
 
+    // Orca: Restrict painting to triangles that currently hold one of the given states, so that a
+    // single filament can be recolored inside an area without disturbing the other filaments there.
+    // Triangles in any other state are left untouched and are not subdivided.
+    // An empty list (the default) lets painting overwrite any state.
+    void set_replace_filter(const std::vector<EnforcerBlockerType> &states) { m_replace_filter = states; }
+    void clear_replace_filter() { m_replace_filter.clear(); }
+    bool has_replace_filter() const { return !m_replace_filter.empty(); }
+
 protected:
     // Triangle and info about how it's split.
     class Triangle {
@@ -477,8 +485,13 @@ protected:
     // Zero indicates an uninitialized state.
     float m_old_cursor_radius_sqr = 0;
 
+    // Orca: states that painting is allowed to overwrite. Empty means no restriction.
+    std::vector<EnforcerBlockerType> m_replace_filter;
+
     // Private functions:
 private:
+    // Orca: may a triangle currently in this state be repainted?
+    bool may_replace_state(EnforcerBlockerType state) const;
     bool select_triangle(int facet_idx, EnforcerBlockerType type, bool triangle_splitting);
     bool select_triangle_recursive(int facet_idx, const Vec3i32 &neighbors, EnforcerBlockerType type, bool triangle_splitting);
     void undivide_triangle(int facet_idx);

@@ -547,6 +547,13 @@ void TriangleSelector::bucket_fill_select_triangles(const Vec3f& hit, int facet_
     }
 }
 
+// Orca: with no filter set, painting overwrites everything it touches (the default).
+// With a filter set, only triangles already holding one of the filtered states are repainted.
+bool TriangleSelector::may_replace_state(EnforcerBlockerType state) const
+{
+    return m_replace_filter.empty() || std::find(m_replace_filter.begin(), m_replace_filter.end(), state) != m_replace_filter.end();
+}
+
 // Selects either the whole triangle (discarding any children it had), or divides
 // the triangle recursively, selecting just subtriangles truly inside the circle.
 // This is done by an actual recursive call. Returns false if the triangle is
@@ -920,9 +927,20 @@ bool TriangleSelector::select_triangle_recursive(int facet_idx, const Vec3i32 &n
         return false;
 
     if (num_of_inside_vertices == 3) {
-        // dump any subdivision and select whole triangle
-        undivide_triangle(facet_idx);
-        tr->set_state(type);
+        if (this->has_replace_filter() && tr->is_split()) {
+            // Orca: the children may hold a mix of states, so each one has to be tested against
+            // the filter separately instead of collapsing the whole triangle into a single state.
+            // remove_useless_children() in select_triangle() merges them back if they end up equal.
+            int num_of_children = tr->number_of_split_sides() + 1;
+            for (int i = 0; i < num_of_children; ++i) {
+                select_triangle_recursive(tr->children[i], this->child_neighbors(*tr, neighbors, i), type, triangle_splitting);
+                tr = &m_triangles[facet_idx]; // might have been invalidated
+            }
+        } else if (this->may_replace_state(tr->get_state())) {
+            // dump any subdivision and select whole triangle
+            undivide_triangle(facet_idx);
+            tr->set_state(type);
+        }
     } else {
         // the triangle is partially inside, let's recursively divide it
         // (if not already) and try selecting its children.
@@ -932,6 +950,11 @@ bool TriangleSelector::select_triangle_recursive(int facet_idx, const Vec3i32 &n
             // No need to split, all children would end up selected anyway.
             return true;
         }
+
+        // Orca: a leaf triangle the replace filter rejects keeps its state and is not subdivided.
+        // Returning true keeps the caller's flood fill spreading past it to the triangles behind.
+        if (! tr->is_split() && ! this->may_replace_state(tr->get_state()))
+            return true;
 
         if (triangle_splitting)
             split_triangle(facet_idx, neighbors);
@@ -1988,7 +2011,7 @@ void TriangleSelector::seed_fill_unselect_all_triangles()
 void TriangleSelector::seed_fill_apply_on_triangles(EnforcerBlockerType new_state)
 {
     for (Triangle &triangle : m_triangles)
-        if (!triangle.is_split() && triangle.is_selected_by_seed_fill())
+        if (!triangle.is_split() && triangle.is_selected_by_seed_fill() && this->may_replace_state(triangle.get_state()))
             triangle.set_state(new_state);
 
     for (Triangle &triangle : m_triangles)

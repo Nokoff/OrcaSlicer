@@ -694,6 +694,23 @@ std::vector<GLGizmoPainterBase::ProjectedHeightRange> GLGizmoPainterBase::get_pr
     return hit_triangles_by_mesh;
 }
 
+namespace {
+// Orca: keeps a "replace this filament only" filter on a selector for the duration of a single
+// paint operation, so it can never leak into unrelated operations such as the hover preview.
+class ScopedReplaceFilter
+{
+public:
+    ScopedReplaceFilter(TriangleSelector &selector, const std::vector<EnforcerBlockerType> &states) : m_selector(selector)
+    {
+        m_selector.set_replace_filter(states);
+    }
+    ~ScopedReplaceFilter() { m_selector.clear_replace_filter(); }
+
+private:
+    TriangleSelector &m_selector;
+};
+} // namespace
+
 // Following function is called from GLCanvas3D to inform the gizmo about a mouse/keyboard event.
 // The gizmo has an opportunity to react - if it does, it should return true so that the Canvas3D is
 // aware that the event was reacted to and stops trying to make different sense of it. If the gizmo
@@ -859,6 +876,7 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
 
                 std::unique_ptr<TriangleSelector::Cursor> cursor = TriangleSelector::SinglePointCursor::cursor_factory(phr.z_world,
                     camera_pos, m_cursor_height, trafo_matrix, clp);
+                ScopedReplaceFilter replace_filter(*m_triangle_selectors[mesh_idx], this->get_replace_filter_states(mesh_idx));
                 m_triangle_selectors[mesh_idx]->select_patch(int(phr.first_facet_idx), std::move(cursor), new_state, trafo_matrix_not_translate,
                     m_triangle_splitting_enabled, m_paint_on_overhangs_only ? m_highlight_by_angle_threshold_deg : 0.f);
 
@@ -911,6 +929,7 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
 
             assert(mesh_idx < int(m_triangle_selectors.size()));
             const TriangleSelector::ClippingPlane &clp = this->get_clipping_plane_in_volume_coordinates(trafo_matrix);
+            ScopedReplaceFilter replace_filter(*m_triangle_selectors[mesh_idx], this->get_replace_filter_states(mesh_idx));
             if (m_tool_type == ToolType::SMART_FILL || m_tool_type == ToolType::BUCKET_FILL || (m_tool_type == ToolType::BRUSH && m_cursor_type == TriangleSelector::CursorType::POINTER)) {
                 for(const ProjectedMousePosition &projected_mouse_position : projected_mouse_positions) {
                     assert(projected_mouse_position.mesh_idx == mesh_idx);

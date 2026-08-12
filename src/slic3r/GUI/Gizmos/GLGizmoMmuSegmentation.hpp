@@ -106,6 +106,9 @@ protected:
     }
     EnforcerBlockerType get_right_button_state_type() const override { return EnforcerBlockerType(-1); }
 
+    // Orca: "replace only" painting - limits every tool to recoloring a single existing filament.
+    std::vector<EnforcerBlockerType> get_replace_filter_states(int mesh_idx) const override;
+
     void on_render_input_window(float x, float y, float bottom_limit) override;
     std::string on_get_name() const override;
     void show_tooltip_information(float caption_max, float x, float y);
@@ -131,6 +134,10 @@ protected:
     // Filament remap feature
     std::vector<size_t>               m_extruder_remap;      // index → target extruder index
     bool                              m_show_filament_remap_ui = false;
+
+    // Orca: replace-only painting. While enabled, painting recolors just m_replace_source_idx.
+    bool                              m_replace_only = false;
+    size_t                            m_replace_source_idx = 0;
 
     // Minimal context for gradient rendering; only physical_colors is used
     MixedFilamentDisplayContext       m_mixed_display_context;

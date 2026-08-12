@@ -235,6 +235,12 @@ bool GLGizmoMmuSegmentation::on_init()
     m_desc["remap"]                           = _L("Remap");
     m_desc["cancel_remap"]                    = _L("Cancel");
 
+    // Replace-only painting descriptions
+    m_desc["replace_only"]                    = _L("Replace only");
+    m_desc["replace_only_tooltip"]            = _L("Paint over one filament only. Every tool then recolors just the chosen "
+                                                   "filament and leaves the other colors in the painted area untouched.");
+    m_desc["replace_source"]                  = _L("Filament to replace");
+
     init_extruders_data();
 
     return true;
@@ -895,6 +901,38 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
 
     ImGui::Separator();
 
+    // Replace-only painting: every tool recolors just one existing filament, leaving the rest of
+    // the painted area alone. Combined with the height range tool this swaps a color inside a band.
+    m_imgui->bbl_checkbox(m_desc.at("replace_only"), m_replace_only);
+    if (ImGui::IsItemHovered())
+        m_imgui->tooltip(m_desc.at("replace_only_tooltip"), max_tooltip_width);
+
+    if (m_replace_only && n_extruder_colors > 0) {
+        m_replace_source_idx = std::min(m_replace_source_idx, n_extruder_colors - 1);
+
+        int source_filament = int(m_replace_source_idx) + 1;
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc.at("replace_source"));
+        ImGui::SameLine();
+        ImGui::PushItemWidth(m_imgui->scaled(4.5f));
+        if (ImGui::InputInt("##replace_source_filament", &source_filament, 1, 10, ImGuiInputTextFlags_CharsDecimal)) {
+            source_filament      = std::clamp(source_filament, 1, int(n_extruder_colors));
+            m_replace_source_idx = size_t(source_filament - 1);
+        }
+
+        // Swatch of the filament being replaced, so its number is not the only cue.
+        const unsigned int replace_filament_id = m_display_filament_ids[m_replace_source_idx];
+        if (replace_filament_id >= 1 && replace_filament_id <= m_extruders_colors.size()) {
+            ImGui::SameLine();
+            const ImGuiColorEditFlags swatch_flags = ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel |
+                                                     ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder;
+            ImGui::ColorButton("##replace_source_color", ImGuiWrapper::to_ImVec4(m_extruders_colors[replace_filament_id - 1]), swatch_flags,
+                               ImVec2(max_filament_label_size.x + m_imgui->scaled(0.5f), 0.f));
+        }
+    }
+
+    ImGui::Separator();
+
 
     if (m_imgui->button(m_desc.at("perform_remap"))) {
         m_show_filament_remap_ui = !m_show_filament_remap_ui;
@@ -1108,6 +1146,25 @@ void GLGizmoMmuSegmentation::tool_changed(wchar_t old_tool, wchar_t new_tool)
 PainterGizmoType GLGizmoMmuSegmentation::get_painter_type() const
 {
     return PainterGizmoType::MM_SEGMENTATION;
+}
+
+std::vector<EnforcerBlockerType> GLGizmoMmuSegmentation::get_replace_filter_states(int mesh_idx) const
+{
+    if (!m_replace_only || m_replace_source_idx >= m_display_filament_ids.size())
+        return {};
+
+    const unsigned int source_filament_id = m_display_filament_ids[m_replace_source_idx];
+    if (source_filament_id == 0)
+        return {};
+
+    std::vector<EnforcerBlockerType> states{EnforcerBlockerType(source_filament_id)};
+
+    // Triangles that were never painted hold the NONE state but are displayed in the color of the
+    // volume's own filament, so they have to count as that filament to match what the user sees.
+    if (mesh_idx >= 0 && mesh_idx < int(m_volumes_extruder_idxs.size()) && m_volumes_extruder_idxs[mesh_idx] == int(source_filament_id))
+        states.push_back(EnforcerBlockerType::NONE);
+
+    return states;
 }
 
 // BBS
