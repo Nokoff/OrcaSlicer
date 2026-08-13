@@ -11304,7 +11304,10 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                 //ObjImportColorFn obj_color_fun=nullptr;
                 auto obj_color_fun = [this, &path](std::vector<RGBA> &input_colors, bool is_single_color, std::vector<unsigned char> &filament_ids,
                                                    unsigned char &first_extruder_id) {
-                    if (!boost::iends_with(path.string(), ".obj")) { return; }
+                    if (!boost::iends_with(path.string(), ".obj") && !boost::iends_with(path.string(), ".glb") &&
+                        !boost::iends_with(path.string(), ".gltf")) {
+                        return;
+                    }
                     const std::vector<std::string> extruder_colours = wxGetApp().plater()->get_extruder_colors_from_plater_config();
                     ObjColorDialog                 color_dlg(nullptr, input_colors, is_single_color, extruder_colours, filament_ids, first_extruder_id);
                     if (color_dlg.ShowModal() != wxID_OK) { 
@@ -11767,12 +11770,32 @@ std::vector<size_t> Plater::priv::load_model_objects(const ModelObjectPtrs& mode
 #endif /* AUTOPLACEMENT_ON_LOAD */
         }
 
+        // glTF assets carry no dependable real-world scale. The spec calls for metres, but
+        // most exporters - and every AI mesh generator - emit normalised units instead, so a
+        // spec-correct import lands a multi-metre object on the plate. Fit those to the build
+        // volume on load. This only ever shrinks, so an asset that was authored at a sane size
+        // is left untouched.
+        const bool is_gltf = boost::iends_with(object->input_file, ".glb") || boost::iends_with(object->input_file, ".gltf");
+
         //BBS: when the object is too large, let the user choose whether to scale it down
         for (size_t i = 0; i < object->instances.size(); ++i) {
             ModelInstance* instance = object->instances[i];
             const Vec3d size = object->instance_bounding_box(i).size();
             const Vec3d ratio = size.cwiseQuotient(bed_size);
             const double max_ratio = std::max(ratio(0), ratio(1));
+            if (is_gltf) {
+                // bed_size carries a nonsense Z (see its construction above), so the height
+                // limit has to come from the build volume directly.
+                const double printable_height = this->bed.build_volume().printable_height();
+                double       fit_ratio        = max_ratio;
+                if (printable_height > 0.0)
+                    fit_ratio = std::max(fit_ratio, size.z() / printable_height);
+                if (fit_ratio > 1.0) {
+                    instance->set_scaling_factor(instance->get_scaling_factor() / fit_ratio);
+                    scaled_down = true;
+                }
+                continue;
+            }
             if (max_ratio > 10000) {
                 MessageDialog dlg(q, _L("Your object appears to be too large, do you want to scale it down to fit the print bed automatically?"), _L("Object too large"),
                                   wxICON_QUESTION | wxYES);
@@ -13334,7 +13357,7 @@ void Plater::priv::reload_from_disk()
     for (size_t i = 0; i < input_paths.size(); ++i) {
         const auto& path = input_paths[i].string();
         auto obj_color_fun = [this, &path](std::vector<RGBA> &input_colors, bool is_single_color, std::vector<unsigned char> &filament_ids, unsigned char &first_extruder_id) {
-            if (!boost::iends_with(path, ".obj")) { return; }
+            if (!boost::iends_with(path, ".obj") && !boost::iends_with(path, ".glb") && !boost::iends_with(path, ".gltf")) { return; }
             const std::vector<std::string> extruder_colours = wxGetApp().plater()->get_extruder_colors_from_plater_config();
             ObjColorDialog                 color_dlg(nullptr, input_colors, is_single_color, extruder_colours, filament_ids, first_extruder_id);
             if (color_dlg.ShowModal() != wxID_OK) { filament_ids.clear(); }
@@ -18757,7 +18780,7 @@ bool Plater::load_files(const wxArrayString& filenames)
     if (Collab::CollabSessionManager::scene_locked_with_notice())
         return false;
 
-    const std::regex pattern_drop(".*[.](stp|step|stl|oltp|obj|amf|3mf|svg|zip)", std::regex::icase);
+    const std::regex pattern_drop(".*[.](stp|step|stl|oltp|obj|glb|gltf|amf|3mf|svg|zip)", std::regex::icase);
     const std::regex pattern_gcode_drop(".*[.](gcode|g)", std::regex::icase);
 
     std::vector<fs::path> normal_paths;

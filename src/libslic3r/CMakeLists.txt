@@ -187,6 +187,8 @@ set(lisbslic3r_sources
     Format/bbs_3mf.cpp
     Format/bbs_3mf.hpp
     format.hpp
+    Format/glTF.cpp
+    Format/glTF.hpp
     Format/OBJ.cpp
     Format/OBJ.hpp
     Format/objparser.cpp

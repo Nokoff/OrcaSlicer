@@ -11,6 +11,7 @@
 #include "TriangleSelector.hpp"
 
 #include "Format/AMF.hpp"
+#include "Format/glTF.hpp"
 #include "Format/svg.hpp"
 // BBS
 #include "FaceDetector.hpp"
@@ -18,6 +19,7 @@
 #include "libslic3r/Geometry/ConvexHull.hpp"
 
 #include <float.h>
+#include <unordered_map>
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/replace.hpp>
@@ -223,6 +225,50 @@ Model Model::read_from_step(const std::string&                                  
     return model;
 }
 
+namespace {
+// Collapse a per-face colour list onto a small palette, keeping a map back to the faces.
+// A textured glTF asset gives almost every facet its own sampled colour - millions of them -
+// and the colour dialog runs k-means once per candidate cluster count, so handing it the raw
+// list would freeze the UI for minutes. Bucketing colours onto a uniform grid first is
+// visually free here, because the result collapses onto a handful of filaments regardless.
+// Returns the palette size; falls back to coarser buckets until it fits max_palette.
+size_t build_color_palette(const std::vector<RGBA> &face_colors,
+                           std::vector<RGBA> &      palette,
+                           std::vector<uint32_t> &  face_to_palette,
+                           size_t                   max_palette)
+{
+    for (int bits = 5; bits >= 2; --bits) {
+        const int levels = 1 << bits;
+        auto      quant  = [levels](float v) -> uint32_t {
+            const int q = int(std::min(std::max(v, 0.f), 1.f) * float(levels - 1) + 0.5f);
+            return uint32_t(std::min(std::max(q, 0), levels - 1));
+        };
+
+        std::unordered_map<uint32_t, uint32_t> lookup;
+        palette.clear();
+        face_to_palette.assign(face_colors.size(), 0);
+
+        bool overflow = false;
+        for (size_t i = 0; i < face_colors.size(); ++i) {
+            const RGBA &   c   = face_colors[i];
+            const uint32_t key = (quant(c[0]) << 24) | (quant(c[1]) << 16) | (quant(c[2]) << 8) | quant(c[3]);
+            auto           it  = lookup.find(key);
+            if (it == lookup.end()) {
+                if (palette.size() >= max_palette) {
+                    overflow = true;
+                    break;
+                }
+                it = lookup.emplace(key, (uint32_t) palette.size()).first;
+                palette.emplace_back(c);
+            }
+            face_to_palette[i] = it->second;
+        }
+        if (!overflow) break;
+    }
+    return palette.size();
+}
+} // namespace
+
 // BBS: add part plate related logic
 // BBS: backup & restore
 // Loading model from a file, it may be a simple geometry file as STL or OBJ, however it may be a project file as well.
@@ -296,6 +342,54 @@ Model Model::read_from_file(const std::string&                                  
             }*/
         }
     }
+    else if (boost::algorithm::iends_with(input_file, ".glb") || boost::algorithm::iends_with(input_file, ".gltf")) {
+        GltfInfo gltf_info;
+        result = load_gltf(input_file.c_str(), &model, gltf_info, message);
+        if (result) {
+            unsigned char first_extruder_id;
+            // Reuse the OBJ colour-mapping dialog: it takes a colour per element and
+            // returns a filament id per element, which is exactly what we have.
+            if (gltf_info.vertex_colors.size() > 0) {
+                std::vector<unsigned char> vertex_filament_ids;
+                if (objFn) { // 1.result is ok and pop up a dialog
+                    objFn(gltf_info.vertex_colors, false, vertex_filament_ids, first_extruder_id);
+                    if (vertex_filament_ids.size() > 0) {
+                        if (!obj_import_vertex_color_deal(vertex_filament_ids, first_extruder_id, &model))
+                            BOOST_LOG_TRIVIAL(warning) << "glTF: vertex colours could not be applied; importing geometry only.";
+                    }
+                }
+            } else if (gltf_info.face_colors.size() > 0) {
+                std::vector<unsigned char> face_filament_ids;
+                if (objFn) { // 1.result is ok and pop up a dialog
+                    // Above this many distinct facet colours the dialog's k-means becomes the
+                    // bottleneck, so cluster a reduced palette and expand the answer back out.
+                    static const size_t max_direct_colors = 10000;
+                    if (gltf_info.face_colors.size() > max_direct_colors) {
+                        std::vector<RGBA>     palette;
+                        std::vector<uint32_t> face_to_palette;
+                        build_color_palette(gltf_info.face_colors, palette, face_to_palette, max_direct_colors);
+                        BOOST_LOG_TRIVIAL(info) << "glTF: reduced " << gltf_info.face_colors.size() << " facet colours to a palette of "
+                                                << palette.size();
+                        std::vector<unsigned char> palette_filament_ids;
+                        objFn(palette, gltf_info.is_single_color, palette_filament_ids, first_extruder_id);
+                        if (palette_filament_ids.size() == palette.size()) {
+                            face_filament_ids.resize(face_to_palette.size());
+                            for (size_t i = 0; i < face_to_palette.size(); ++i)
+                                face_filament_ids[i] = palette_filament_ids[face_to_palette[i]];
+                        }
+                    } else {
+                        objFn(gltf_info.face_colors, gltf_info.is_single_color, face_filament_ids, first_extruder_id);
+                    }
+                    if (face_filament_ids.size() > 0) {
+                        // Keep the geometry even if the mapping cannot be applied - losing the
+                        // whole import because colours failed would be a poor trade.
+                        if (!obj_import_face_color_deal(face_filament_ids, first_extruder_id, &model))
+                            BOOST_LOG_TRIVIAL(warning) << "glTF: face colours could not be applied; importing geometry only.";
+                    }
+                }
+            }
+        }
+    }
     else if (boost::algorithm::iends_with(input_file, ".svg"))
         result = load_svg(input_file.c_str(), &model, message);
     //BBS: remove the old .amf.xml files
@@ -322,7 +416,7 @@ Model Model::read_from_file(const std::string&                                  
     }
 #endif
     else
-        throw Slic3r::RuntimeError(_L("Unknown file format. Input file must have .stl, .obj, .amf(.xml) extension."));
+        throw Slic3r::RuntimeError(_L("Unknown file format. Input file must have .stl, .obj, .glb, .gltf, .amf(.xml) extension."));
 
     if (is_cb_cancel) {
         Model empty_model;
