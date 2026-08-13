@@ -3167,8 +3167,16 @@ void GUI_App::machine_find()
     Bonjour::TxtKeys txt_keys   = {"sn", "version", "machine_type"};
     std::string      unique_key = "sn";
 
+    // Ask printers we have seen before at their last address as well. Some networks
+    // never deliver the multicast query to them, and those printers stay invisible
+    // to a group-only lookup even while they answer a direct query.
+    std::vector<std::string> known_hosts;
+    for (const auto &d : app_config->get_devices())
+        known_hosts.push_back(d.ip);
+
     m_machine_find_engine = Bonjour("snapmaker")
                                 .set_txt_keys(std::move(txt_keys))
+                                .set_unicast_targets(parse_unicast_targets(known_hosts))
                                 .set_retries(3)
                                 .set_timeout(10)
                                 .on_reply([this](BonjourReply&& reply) {
@@ -7593,15 +7601,13 @@ bool GUI_App::sm_disconnect_current_machine(bool need_reload_printerview)
     return true;
 }
 
-// A saved printer can be reconnected without the user when its LAN pairing
-// certificates were kept. Cloud sessions issue short-lived credentials that the
-// device page has to negotiate again, so they are left alone.
+// A saved printer can be reconnected without the user when its pairing certificates
+// were kept, whether it was paired over the LAN or through the cloud. A cloud
+// reconnect skips the device page's online authorisation step, so it can be refused
+// by the broker; that costs one failed attempt and leaves the user to connect by
+// hand exactly as before.
 static bool sm_device_can_auto_connect(const DeviceInfo &d, std::string &reason)
 {
-    if (d.link_mode == "wan") {
-        reason = "cloud device, needs the device page to authorise";
-        return false;
-    }
     if (d.protocol != 0 && d.protocol != int(PrintHostType::htMoonRaker_mqtt)) {
         reason = "not an MQTT printer";
         return false;
@@ -7630,11 +7636,25 @@ void GUI_App::sm_auto_connect_primary_device()
     std::string       reason;
     const std::string last_id = app_config->get("last_connected_dev_id");
     bool              have_info = false;
-    if (!last_id.empty()) {
+
+    // The dedicated reconnect record comes first: it is the only place a cloud
+    // printer survives, since the device page clears those from the device list.
+    // An unusable record is not fatal - the sources below still get their turn.
+    DeviceInfo remembered;
+    if (app_config->get_auto_connect_device(remembered)) {
+        if (sm_device_can_auto_connect(remembered, reason)) {
+            info      = remembered;
+            have_info = true;
+        } else {
+            BOOST_LOG_TRIVIAL(warning) << "Auto-connect: remembered printer unusable (" << reason << ")";
+        }
+    }
+
+    if (!have_info && !last_id.empty()) {
         if (app_config->get_device_info(last_id, info)) {
             have_info = true;
         } else {
-            // Stale id (e.g. cloud device that was never persisted, or deleted).
+            // Stale id (e.g. a deleted printer).
             BOOST_LOG_TRIVIAL(warning) << "Auto-connect: last used printer is no longer saved, clearing id";
             app_config->set("last_connected_dev_id", "");
         }
@@ -7658,25 +7678,32 @@ void GUI_App::sm_auto_connect_primary_device()
         return;
     }
 
-    // Refresh LAN addresses in parallel; the worker below picks up the newest one.
-    machine_find();
+    // A cloud printer answers on a fixed broker address, so only a LAN printer can
+    // have moved to a new DHCP address and is worth rediscovering first.
+    const bool lan_device = info.link_mode != "wan";
+    if (lan_device)
+        machine_find();
 
     // The printer config must be copied here, on the UI thread.
     DynamicPrintConfig config = preset_bundle->printers.get_edited_preset().config;
 
     sm_stop_auto_connect();
     m_auto_connect_abort = false;
-    m_auto_connect_thread = std::thread([this, info, config]() mutable {
-        // Give mDNS a moment to report a new DHCP address before connecting.
-        for (int i = 0; i < 20 && !m_auto_connect_abort; ++i)
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    m_auto_connect_thread = std::thread([this, info, config, lan_device]() mutable {
+        if (lan_device) {
+            // Give mDNS a moment to report a new DHCP address before connecting.
+            for (int i = 0; i < 20 && !m_auto_connect_abort; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
         if (m_auto_connect_abort)
             return;
 
         DeviceInfo fresh = info;
-        app_config->get_device_info(info.dev_id, fresh);
-        if (fresh.ip.empty())
-            fresh = info;
+        if (lan_device) {
+            DeviceInfo discovered;
+            if (app_config->get_device_info(info.dev_id, discovered) && !discovered.ip.empty())
+                fresh.ip = discovered.ip;
+        }
 
         BOOST_LOG_TRIVIAL(warning) << "Auto-connect: connecting to " << fresh.dev_name << " at " << fresh.ip;
         if (!sm_connect_to_device(fresh, std::move(config), true))
@@ -7808,9 +7835,11 @@ bool GUI_App::sm_connect_to_device(const DeviceInfo &device, DynamicPrintConfig 
                 stored.clientId      = connected_info.clientId.empty() ? existing.clientId : connected_info.clientId;
             }
             app_config->save_device_info(stored);
-            // Only LAN devices are persisted across restarts; remember those for auto-connect.
+            // Only LAN devices stay in the device list across restarts; the reconnect
+            // record carries cloud printers, which that list drops on logout.
             if (stored.link_mode != "wan")
                 app_config->set("last_connected_dev_id", stored.dev_id);
+            app_config->save_auto_connect_device(stored);
             app_config->set("use_new_connect", "true");
 
             set_connect_host(host);

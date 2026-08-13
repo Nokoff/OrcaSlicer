@@ -45,6 +45,11 @@ struct BonjourReply
 
 std::ostream& operator<<(std::ostream &, const BonjourReply &);
 
+// Turn stored host strings into addresses usable as Bonjour::set_unicast_targets.
+// Anything that is not a literal IP is dropped, so cloud endpoint hostnames and
+// empty entries are simply skipped rather than treated as errors.
+std::vector<boost::asio::ip::address> parse_unicast_targets(const std::vector<std::string>& hosts);
+
 /// Bonjour lookup performer
 class Bonjour : public std::enable_shared_from_this<Bonjour> {
 private:
@@ -73,6 +78,10 @@ public:
 	
 	// sets hostname queried by resolve()
 	Bonjour& set_hostname(const std::string& hostname);
+	// Addresses to query directly, in addition to the multicast group. Networks that
+	// filter multicast (IGMP snooping, AP client isolation) drop the group query, but
+	// the responder still answers a one-shot query sent straight to its address.
+	Bonjour& set_unicast_targets(std::vector<boost::asio::ip::address> targets);
 
 	Bonjour& on_reply(ReplyFn fn);
 	Bonjour& on_complete(CompleteFn fn);
@@ -157,6 +166,14 @@ public:
 		, const boost::asio::ip::address& multicast_address
 		, std::shared_ptr< boost::asio::io_service > io_service);
 
+	// Unicast socket: binds an ephemeral port instead of 5353 and joins no group.
+	// The source port matters - a query from 5353 is answered over multicast, which is
+	// what we are working around here, while a query from any other port gets a
+	// one-shot reply straight back to it (RFC 6762 section 6.7).
+	UdpSocket(Bonjour::ReplyFn replyfn
+		, const std::vector<boost::asio::ip::address>& unicast_targets
+		, std::shared_ptr< boost::asio::io_service > io_service);
+
 	~UdpSocket();
 
 	void send();
@@ -170,6 +187,7 @@ protected:
 	boost::asio::ip::address					    multicast_address;
 	boost::asio::ip::udp::socket					socket;
 	boost::asio::ip::udp::endpoint					mcast_endpoint;
+	std::vector<boost::asio::ip::udp::endpoint>		unicast_endpoints;
 	std::shared_ptr< boost::asio::io_service >	io_service;
 	std::vector<BonjourRequest>						requests;
 };
@@ -203,6 +221,23 @@ public:
 		, const boost::asio::ip::address& multicast_address
 		, std::shared_ptr< boost::asio::io_service > io_service)
 		: UdpSocket(replyfn, multicast_address, io_service)
+		, txt_keys(txt_keys)
+		, service(service)
+		, service_dn(service_dn)
+		, protocol(protocol)
+	{
+		assert(!service.empty() && replyfn);
+		create_request();
+	}
+
+	LookupSocket(Bonjour::TxtKeys txt_keys
+		, std::string service
+		, std::string service_dn
+		, std::string protocol
+		, Bonjour::ReplyFn replyfn
+		, const std::vector<boost::asio::ip::address>& unicast_targets
+		, std::shared_ptr< boost::asio::io_service > io_service)
+		: UdpSocket(replyfn, unicast_targets, io_service)
 		, txt_keys(txt_keys)
 		, service(service)
 		, service_dn(service_dn)

@@ -1886,6 +1886,13 @@ void SSWCP_MachineFind_Instance::sw_StartMachineFind()
                 Bonjour::TxtKeys txt_keys   = {"sn", "version", "machine_type", "link_mode", "userid", "device_name", "ip", "region"};
                 std::string      unique_key = "sn";
 
+                // Printers we have already seen are also asked directly, so a network
+                // that drops the multicast query does not hide them from the scan.
+                std::vector<std::string> known_hosts;
+                for (const auto& d : wxGetApp().app_config->get_devices())
+                    known_hosts.push_back(d.ip);
+                auto unicast_targets = parse_unicast_targets(known_hosts);
+
                 for (size_t i = 0; i < m_engines.size(); ++i) {
                     auto self = std::dynamic_pointer_cast<SSWCP_MachineFind_Instance>(shared_from_this());
                     if(!self){
@@ -1894,6 +1901,7 @@ void SSWCP_MachineFind_Instance::sw_StartMachineFind()
                     std::weak_ptr<SSWCP_MachineFind_Instance> weak_self(self);
                     m_engines[i] = Bonjour(mdns_service_names[i])
                                      .set_txt_keys(std::move(txt_keys))
+                                     .set_unicast_targets(unicast_targets)
                                      .set_retries(3)
                                      .set_timeout(last_time >= 0.0 ? last_time/1000 : 20)
                                      .on_reply([weak_self, unique_key](BonjourReply&& reply) {
@@ -4381,7 +4389,9 @@ void SSWCP_MachineConnect_Instance::sw_disconnect() {
 
 
 
+        // Disconnecting on purpose must also stop the next launch reconnecting.
         wxGetApp().app_config->set("last_connected_dev_id", "");
+        wxGetApp().app_config->clear_auto_connect_device();
         bool res = wxGetApp().sm_disconnect_current_machine(need_reload);
         m_first_connected = true;
         if (!res) {
@@ -5042,6 +5052,7 @@ void SSWCP_MachineManage_Instance::sw_DeleteDevices()
                 }
                 wxGetApp().app_config->clear_device_info();
                 wxGetApp().app_config->set("last_connected_dev_id", "");
+                wxGetApp().app_config->clear_auto_connect_device();
             } else {
                 const std::string last_id = wxGetApp().app_config->get("last_connected_dev_id");
                 for (size_t i = 0; i < ids.size(); ++i) {
@@ -5871,13 +5882,13 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
 
                                         auto auth_info = host->get_auth_info();
                                         try {
-                                            // LAN certificates keep working across restarts, so storing them lets the
-                                            // next launch reconnect without asking for the pairing code again. Cloud
-                                            // sessions get short-lived credentials that are not worth keeping.
-                                            const bool lan_device = link_mode != "wan";
-                                            info.ca       = lan_device ? auth_info["ca"].get<std::string>() : "";
-                                            info.cert     = lan_device ? auth_info["cert"].get<std::string>() : "";
-                                            info.key      = lan_device ? auth_info["key"].get<std::string>() : "";
+                                            // Certificates keep working across restarts, so storing them lets the next
+                                            // launch reconnect without pairing again. Cloud credentials are kept too:
+                                            // they are sealed at rest like the LAN ones, and a cloud reconnect that the
+                                            // broker refuses just falls back to connecting from the device page.
+                                            info.ca       = auth_info["ca"].get<std::string>();
+                                            info.cert     = auth_info["cert"].get<std::string>();
+                                            info.key      = auth_info["key"].get<std::string>();
                                             info.user     = auth_info["user"];
                                             info.password = auth_info["password"];
                                             info.port     = auth_info["port"];
@@ -6106,11 +6117,14 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
 
                                     wxGetApp().app_config->set("use_new_connect", "true");
                                     for (const auto &d : devices) {
-                                        // Cloud devices are not persisted; only remember LAN for auto-connect.
-                                        if (d.connected && d.link_mode != "wan") {
+                                        if (!d.connected)
+                                            continue;
+                                        // Only LAN printers stay in the device list, so a cloud
+                                        // printer is remembered through the reconnect record instead.
+                                        if (d.link_mode != "wan")
                                             wxGetApp().app_config->set("last_connected_dev_id", d.dev_id);
-                                            break;
-                                        }
+                                        wxGetApp().app_config->save_auto_connect_device(d);
+                                        break;
                                     }
                                     wxGetApp().mainframe->plater()->sidebar().update_all_preset_comboboxes(reload_device_view);
                                     wxGetApp().mainframe->m_print_enable = true;

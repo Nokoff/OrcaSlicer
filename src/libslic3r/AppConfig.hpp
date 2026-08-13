@@ -36,11 +36,11 @@ struct DeviceInfo {
     std::string dev_name;
     std::string model_name;
     std::string preset_name;  // 关联的打印机预设名称
-    bool        connected;
+    bool        connected = false;
 	std::string img;
 	std::vector<std::string> nozzle_sizes;
     std::string              sn;
-    int              protocol;
+    int              protocol = 0;
     std::string              api_key;
     std::string              user;
     std::string              password;
@@ -48,7 +48,7 @@ struct DeviceInfo {
     std::string              cert;
     std::string              key;
     std::string              clientId;
-    int              port;
+    int              port = 0;
     std::string              link_mode;
     std::string              userid;
     std::string              id;
@@ -386,6 +386,13 @@ public:
     bool get_device_info(const std::string& dev_id, DeviceInfo& info) const;
     void                    clear_device_info();
 
+    // The printer to reconnect to on the next launch. Kept apart from the device list
+    // because that list is owned by the device page, which drops cloud printers on
+    // logout - a reconnect target has to outlive that.
+    void save_auto_connect_device(const DeviceInfo& device);
+    bool get_auto_connect_device(DeviceInfo& info) const;
+    void clear_auto_connect_device();
+
 	void clear_filament_extruder_map();
     std::unordered_map<int, int>& get_filament_extruder_map_ref();
 
@@ -435,6 +442,9 @@ private:
 
     // 添加设备信息存储
     std::vector<DeviceInfo> m_device_list;
+
+    // Printer to reconnect to at startup, empty dev_id when none is remembered.
+    DeviceInfo m_auto_connect_device;
 
 	// 耗材喷嘴映射表
     std::unordered_map<int, int> filament_extruder_map;
