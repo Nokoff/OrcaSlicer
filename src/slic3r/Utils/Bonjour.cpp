@@ -677,6 +677,30 @@ UdpSocket::UdpSocket( Bonjour::ReplyFn replyfn, const asio::ip::address& multica
 	}
 }
 
+UdpSocket::UdpSocket( Bonjour::ReplyFn replyfn, const std::vector<asio::ip::address>& unicast_targets, std::shared_ptr< boost::asio::io_service > io_service)
+	: replyfn(replyfn)
+	, socket(*io_service)
+	, io_service(io_service)
+{
+	try {
+		// Bind port 0: the ephemeral source port is what makes responders answer us
+		// directly instead of over the multicast group.
+		socket.open(udp::v4());
+		socket.set_option(udp::socket::reuse_address(true));
+		socket.bind(udp::endpoint(udp::v4(), 0));
+
+		for (const auto& target : unicast_targets) {
+			if (target.is_v4())
+				unicast_endpoints.emplace_back(target, BonjourRequest::MCAST_PORT);
+		}
+
+		BOOST_LOG_TRIVIAL(info) << "Unicast mDNS socket created for " << unicast_endpoints.size() << " target(s)";
+	}
+	catch (std::exception& e) {
+		BOOST_LOG_TRIVIAL(error) << e.what();
+	}
+}
+
 UdpSocket::~UdpSocket()
 {
 	try {
@@ -698,9 +722,20 @@ UdpSocket::~UdpSocket()
 void UdpSocket::send()
 {
 	try {
-		for (const auto& request : requests)
-			socket.send_to(asio::buffer(request.m_data), mcast_endpoint);
-		
+		for (const auto& request : requests) {
+			if (unicast_endpoints.empty()) {
+				socket.send_to(asio::buffer(request.m_data), mcast_endpoint);
+			} else {
+				// One unreachable target must not stop us querying the others.
+				for (const auto& endpoint : unicast_endpoints) {
+					boost::system::error_code ec;
+					socket.send_to(asio::buffer(request.m_data), endpoint, 0, ec);
+					if (ec)
+						BOOST_LOG_TRIVIAL(info) << "Unicast mDNS query to " << endpoint.address() << " failed: " << ec.message();
+				}
+			}
+		}
+
 		// Should we care if this is called while already receiving? (async_receive call from receive_handler)
 		async_receive();
 	}
@@ -856,6 +891,7 @@ struct Bonjour::priv
 	unsigned timeout;
 	unsigned retries;
 	std::string hostname;
+	std::vector<boost::asio::ip::address> unicast_targets;
 
 //	std::vector<BonjourReply> replies;
 
@@ -930,7 +966,12 @@ void Bonjour::priv::lookup_perform()
 	} else {
 		BOOST_LOG_TRIVIAL(info)<< "Failed to resolve ipv6 interfaces: " << ec.message();
 	}
-	
+
+	// Query known addresses directly as well, so a printer stays discoverable on
+	// networks where the multicast query never reaches it.
+	if (!unicast_targets.empty())
+		sockets.emplace_back(new LookupSocket(txt_keys, service, service_dn, protocol, replyfn, unicast_targets, io_service));
+
 	try {
 		// send first queries
 		for (auto * socket : sockets)
@@ -1193,6 +1234,33 @@ Bonjour& Bonjour::set_retries(unsigned retries)
 {
 	if (p && retries > 0) { p->retries = retries; }
 	return *this;
+}
+
+Bonjour& Bonjour::set_unicast_targets(std::vector<boost::asio::ip::address> targets)
+{
+	if (p) { p->unicast_targets = std::move(targets); }
+	return *this;
+}
+
+std::vector<boost::asio::ip::address> parse_unicast_targets(const std::vector<std::string>& hosts)
+{
+	std::vector<boost::asio::ip::address> targets;
+	for (std::string host : hosts) {
+		// Stored addresses sometimes carry the port, as in "192.168.0.141:8883".
+		const size_t colon = host.find(':');
+		if (colon != std::string::npos)
+			host = host.substr(0, colon);
+		if (host.empty())
+			continue;
+
+		boost::system::error_code ec;
+		const auto addr = boost::asio::ip::make_address(host, ec);
+		if (ec || !addr.is_v4() || addr.is_loopback() || addr.is_unspecified())
+			continue;
+		if (std::find(targets.begin(), targets.end(), addr) == targets.end())
+			targets.push_back(addr);
+	}
+	return targets;
 }
 
 Bonjour& Bonjour::on_reply(ReplyFn fn)

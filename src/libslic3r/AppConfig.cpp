@@ -710,6 +710,14 @@ std::string AppConfig::load()
                 device.password = decrypt_secret(device.password);
             }
         }
+
+        if (j.contains("auto_connect_device") && j["auto_connect_device"].is_object()) {
+            m_auto_connect_device           = j["auto_connect_device"].get<DeviceInfo>();
+            m_auto_connect_device.cert      = decrypt_secret(m_auto_connect_device.cert);
+            m_auto_connect_device.key       = decrypt_secret(m_auto_connect_device.key);
+            m_auto_connect_device.password  = decrypt_secret(m_auto_connect_device.password);
+            m_auto_connect_device.connected = false;
+        }
     } catch(std::exception err) {
         BOOST_LOG_TRIVIAL(info) << format("parse app config \"%1%\", error: %2%", AppConfig::loading_path(), err.what());
 
@@ -892,6 +900,16 @@ void AppConfig::save()
         // The printer credentials must never reach the config file unprotected.
         for (const char *field : {"cert", "key", "password"})
             j["devices"][i][field] = encrypt_secret(j["devices"][i].value(field, std::string()));
+    }
+
+    // The reconnect target is stored whatever its link mode, cloud printers included,
+    // and gets the same protection as the entries above.
+    if (!m_auto_connect_device.dev_id.empty()) {
+        json auto_connect            = m_auto_connect_device;
+        auto_connect["connected"]    = false;
+        for (const char *field : {"cert", "key", "password"})
+            auto_connect[field] = encrypt_secret(auto_connect.value(field, std::string()));
+        j["auto_connect_device"] = std::move(auto_connect);
     }
     for (const auto& local_machine : m_local_machines) {
         json m_json;
@@ -1545,6 +1563,27 @@ void AppConfig::clear_device_info()
     m_dirty = true;
 }
 
+void AppConfig::save_auto_connect_device(const DeviceInfo& device)
+{
+    m_auto_connect_device           = device;
+    m_auto_connect_device.connected = false;
+    m_dirty                         = true;
+}
+
+bool AppConfig::get_auto_connect_device(DeviceInfo& info) const
+{
+    if (m_auto_connect_device.dev_id.empty())
+        return false;
+    info = m_auto_connect_device;
+    return true;
+}
+
+void AppConfig::clear_auto_connect_device()
+{
+    m_auto_connect_device = DeviceInfo();
+    m_dirty               = true;
+}
+
 void AppConfig::remove_device_info(const std::string& dev_id)
 {
     auto it = std::find_if(m_device_list.begin(), m_device_list.end(),
@@ -1554,6 +1593,10 @@ void AppConfig::remove_device_info(const std::string& dev_id)
         m_device_list.erase(it);
         m_dirty = true;
     }
+
+    // A removed printer must not be reconnected on the next launch.
+    if (m_auto_connect_device.dev_id == dev_id)
+        clear_auto_connect_device();
 }
 
 std::vector<DeviceInfo> AppConfig::get_devices() const
