@@ -47,11 +47,17 @@ namespace GUI {
 
 namespace {
 
-constexpr const char *k_config_key = "my_files_path";
-constexpr int         k_max_files  = 300;
-constexpr int         k_max_depth  = 2;
-constexpr unsigned    k_thumb_size = 192;
-constexpr int         k_max_thumbs = 300;
+constexpr const char *k_config_key    = "my_files_path";
+constexpr const char *k_recursive_key = "my_files_recursive";
+constexpr int         k_max_files     = 500;
+constexpr int         k_max_folders   = 500;
+// Depth limit for the "include sub-folders" mode, so a deep or looping tree cannot run away.
+constexpr int         k_max_depth     = 8;
+// Upper bound on the shallow scan behind each folder tile's "N files" badge, so a directory
+// holding tens of thousands of entries cannot stall the listing.
+constexpr int         k_max_count_scan = 2000;
+constexpr unsigned    k_thumb_size   = 192;
+constexpr int         k_max_thumbs   = 300;
 // Bumped whenever the renderer changes so previously cached (and possibly broken) tiles are redrawn.
 constexpr int         k_thumb_cache_version = 2;
 
@@ -456,47 +462,229 @@ std::string thumbnail_data_url(const std::string &path, std::time_t mtime, std::
 struct FileEntry {
     fs::path    path;
     std::time_t mtime{0};
+    // Folder the file lives in, relative to the one being browsed; empty for direct children.
+    std::string rel_dir;
 };
 
-void collect_recursive(const fs::path &dir, int depth, std::vector<FileEntry> &out)
+struct FolderEntry {
+    fs::path    path;
+    std::time_t mtime{0};
+    int         file_count{0};
+    int         folder_count{0};
+};
+
+std::time_t last_write_time_or_zero(const fs::path &p)
 {
-    if (depth > k_max_depth || (int) out.size() >= k_max_files)
-        return;
+    try {
+        boost::system::error_code ec;
+        const std::time_t        t = fs::last_write_time(p, ec);
+        return ec ? 0 : t;
+    } catch (...) {
+        return 0;
+    }
+}
+
+// Dot-prefixed entries are version-control / metadata noise rather than model libraries.
+bool is_hidden_name(const fs::path &p)
+{
+    const std::string name = p.filename().string();
+    return !name.empty() && name.front() == '.';
+}
+
+// One level deep only: enough to label a folder tile without walking the whole tree.
+void count_folder_contents(const fs::path &dir, int &files, int &folders)
+{
+    files   = 0;
+    folders = 0;
 
     boost::system::error_code ec;
-    if (!fs::is_directory(dir, ec) || ec)
-        return;
-
-    fs::directory_iterator it(dir, ec), end;
+    fs::directory_iterator    it(dir, ec), end;
     if (ec)
         return;
 
-    for (; it != end && (int) out.size() < k_max_files; it.increment(ec)) {
+    for (int scanned = 0; it != end && scanned < k_max_count_scan; it.increment(ec), ++scanned) {
         if (ec) {
             ec.clear();
             continue;
         }
         const fs::path &p = it->path();
+        if (is_hidden_name(p))
+            continue;
         boost::system::error_code status_ec;
         if (fs::is_directory(p, status_ec)) {
             if (!status_ec)
-                collect_recursive(p, depth + 1, out);
+                ++folders;
+        } else if (MyFilesLibrary::is_supported_model_file(p.string())) {
+            ++files;
+        }
+    }
+}
+
+// Lists one directory: sub-folders and the model files directly inside it. Navigation replaced
+// the old recursive flattening, so nothing here descends on its own.
+// Returns false when a cap was hit and entries had to be dropped.
+bool list_directory(const fs::path &dir, std::vector<FolderEntry> &folders, std::vector<FileEntry> &files)
+{
+    bool                      complete = true;
+    boost::system::error_code ec;
+    fs::directory_iterator    it(dir, ec), end;
+    if (ec)
+        return complete;
+
+    for (; it != end; it.increment(ec)) {
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        const fs::path &p = it->path();
+        if (is_hidden_name(p))
+            continue;
+
+        boost::system::error_code status_ec;
+        if (fs::is_directory(p, status_ec)) {
+            if (status_ec)
+                continue;
+            if ((int) folders.size() >= k_max_folders) {
+                complete = false;
+                continue;
+            }
+            FolderEntry entry;
+            entry.path  = p;
+            entry.mtime = last_write_time_or_zero(p);
+            count_folder_contents(p, entry.file_count, entry.folder_count);
+            folders.push_back(std::move(entry));
             continue;
         }
         if (!MyFilesLibrary::is_supported_model_file(p.string()))
             continue;
+        if ((int) files.size() >= k_max_files) {
+            complete = false;
+            continue;
+        }
 
         FileEntry entry;
-        entry.path = p;
-        try {
-            entry.mtime = fs::last_write_time(p, status_ec);
-            if (status_ec)
-                entry.mtime = 0;
-        } catch (...) {
-            entry.mtime = 0;
-        }
-        out.push_back(std::move(entry));
+        entry.path  = p;
+        entry.mtime = last_write_time_or_zero(p);
+        files.push_back(std::move(entry));
     }
+    return complete;
+}
+
+// "Include sub-folders" mode: everything below `dir`, files only. `rel_dir` is the folder each
+// file came from, relative to the folder being browsed, and is what the tile shows as its origin.
+// Returns false when the file cap was hit and entries had to be dropped.
+bool collect_files_recursive(const fs::path &dir, const std::string &rel_dir, int depth, std::vector<FileEntry> &files)
+{
+    if ((int) files.size() >= k_max_files)
+        return false;
+    if (depth > k_max_depth)
+        return true; // Deeper than we are willing to walk, but not a cap on what the user asked for.
+
+    boost::system::error_code ec;
+    fs::directory_iterator    it(dir, ec), end;
+    if (ec)
+        return true;
+
+    bool                  complete = true;
+    std::vector<fs::path> subdirs;
+
+    for (; it != end; it.increment(ec)) {
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        const fs::path &p = it->path();
+        if (is_hidden_name(p))
+            continue;
+
+        boost::system::error_code status_ec;
+        if (fs::is_directory(p, status_ec)) {
+            // Symlinked directories are skipped: following them can loop back on itself.
+            if (!status_ec && !fs::is_symlink(p, status_ec) && !status_ec)
+                subdirs.push_back(p);
+            continue;
+        }
+        if (!MyFilesLibrary::is_supported_model_file(p.string()))
+            continue;
+        if ((int) files.size() >= k_max_files) {
+            complete = false;
+            continue;
+        }
+
+        FileEntry entry;
+        entry.path    = p;
+        entry.mtime   = last_write_time_or_zero(p);
+        entry.rel_dir = rel_dir;
+        files.push_back(std::move(entry));
+    }
+
+    // Breadth first, so a shallow file never loses its slot to a deeply nested one.
+    std::sort(subdirs.begin(), subdirs.end());
+    for (const fs::path &sub : subdirs) {
+        const std::string name = sub.filename().string();
+        const std::string rel  = rel_dir.empty() ? name : rel_dir + "/" + name;
+        if (!collect_files_recursive(sub, rel, depth + 1, files))
+            complete = false;
+    }
+    return complete;
+}
+
+// Set by collect_files() so the page can say it is not showing everything.
+bool g_listing_truncated = false;
+
+// Folder the user is currently browsing, relative to the mapped root; UI thread only.
+std::string g_current_subdir;
+
+// Turns a page-supplied relative path into a folder that provably sits inside `root`.
+// Returns an empty string (meaning "the root itself") for anything else.
+std::string sanitize_subdir(const std::string &root, const std::string &rel_in)
+{
+    if (root.empty() || rel_in.empty())
+        return {};
+
+    std::string rel = rel_in;
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+
+    std::vector<std::string> parts;
+    boost::algorithm::split(parts, rel, boost::algorithm::is_any_of("/"));
+
+    fs::path relative;
+    for (const std::string &part : parts) {
+        if (part.empty() || part == ".")
+            continue;
+        if (part == "..")
+            return {}; // Never walk above the mapped root.
+        relative /= part;
+    }
+    // Anything that still carries a root ("C:", a leading slash) is an absolute path in disguise.
+    if (relative.empty() || relative.is_absolute() || relative.has_root_name())
+        return {};
+
+    boost::system::error_code ec;
+    if (!fs::is_directory(fs::path(root) / relative, ec) || ec)
+        return {};
+    return relative.generic_string();
+}
+
+// True when `path` is `root` or lies underneath it. Both are canonicalised first so symlinks and
+// "..\" segments cannot be used to point outside the library.
+bool path_is_inside(const fs::path &root_in, const fs::path &path_in, bool allow_equal)
+{
+    boost::system::error_code ec;
+    const fs::path            root = fs::canonical(root_in, ec);
+    if (ec)
+        return false;
+    const fs::path path = fs::canonical(path_in, ec);
+    if (ec)
+        return false;
+
+    auto root_it = root.begin();
+    auto path_it = path.begin();
+    for (; root_it != root.end(); ++root_it, ++path_it) {
+        if (path_it == path.end() || *root_it != *path_it)
+            return false;
+    }
+    return allow_equal || path_it != path.end();
 }
 
 // Must be called on the UI thread.
@@ -605,8 +793,48 @@ void MyFilesLibrary::set_folder_path(const std::string &path)
 {
     if (!wxGetApp().app_config)
         return;
+    // A new root invalidates wherever the user had navigated to.
+    g_current_subdir.clear();
     wxGetApp().app_config->set(k_config_key, path);
     wxGetApp().app_config->save();
+}
+
+std::string MyFilesLibrary::get_current_subdir()
+{
+    if (g_current_subdir.empty())
+        return {};
+    // Re-validated on every read: the folder may have been renamed or deleted behind our back.
+    g_current_subdir = sanitize_subdir(get_folder_path(), g_current_subdir);
+    return g_current_subdir;
+}
+
+void MyFilesLibrary::set_current_subdir(const std::string &rel)
+{
+    g_current_subdir = sanitize_subdir(get_folder_path(), rel);
+}
+
+bool MyFilesLibrary::get_recursive()
+{
+    if (!wxGetApp().app_config)
+        return false;
+    return wxGetApp().app_config->get_bool(k_recursive_key);
+}
+
+void MyFilesLibrary::set_recursive(bool on)
+{
+    if (!wxGetApp().app_config)
+        return;
+    wxGetApp().app_config->set(k_recursive_key, on ? "1" : "0");
+    wxGetApp().app_config->save();
+}
+
+std::string MyFilesLibrary::get_current_dir()
+{
+    const std::string root = get_folder_path();
+    if (root.empty())
+        return {};
+    const std::string sub = get_current_subdir();
+    return sub.empty() ? root : (fs::path(root) / fs::path(sub)).string();
 }
 
 bool MyFilesLibrary::select_folder(wxWindow *parent)
@@ -701,7 +929,8 @@ bool MyFilesLibrary::move_files(wxWindow *parent, const std::vector<std::string>
     if (targets.empty())
         return false;
 
-    std::string current = get_folder_path();
+    // Start in the folder being browsed: moving into a sibling sub-folder is the common case.
+    std::string current = get_current_dir();
     wxString    start   = current.empty() ? wxString() : wxString::FromUTF8(current);
     wxDirDialog dialog(parent, _L("Move Files To Folder"), start,
                        wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST | wxDD_NEW_DIR_BUTTON);
@@ -772,25 +1001,30 @@ bool MyFilesLibrary::is_file_in_library(const std::string &path)
         return false;
 
     boost::system::error_code ec;
-    const fs::path root = fs::canonical(fs::path(folder), ec);
-    if (ec)
+    if (!fs::is_regular_file(fs::path(path), ec) || ec)
         return false;
-    const fs::path file = fs::canonical(fs::path(path), ec);
-    if (ec || !fs::is_regular_file(file, ec) || ec)
+    return path_is_inside(fs::path(folder), fs::path(path), false);
+}
+
+bool MyFilesLibrary::is_folder_in_library(const std::string &path)
+{
+    const std::string folder = get_folder_path();
+    if (folder.empty() || path.empty())
         return false;
 
-    auto root_it = root.begin();
-    auto file_it = file.begin();
-    for (; root_it != root.end(); ++root_it, ++file_it) {
-        if (file_it == file.end() || *root_it != *file_it)
-            return false;
-    }
-    return true;
+    boost::system::error_code ec;
+    if (!fs::is_directory(fs::path(path), ec) || ec)
+        return false;
+    // The mapped root itself counts: "open containing folder" on it is still meaningful.
+    return path_is_inside(fs::path(folder), fs::path(path), true);
 }
+
+bool MyFilesLibrary::last_listing_truncated() { return g_listing_truncated; }
 
 void MyFilesLibrary::collect_files(nlohmann::json &out, int images)
 {
-    out = nlohmann::json::array();
+    out                 = nlohmann::json::array();
+    g_listing_truncated = false;
     {
         // Drop whatever the previous list queued; results still in flight are discarded by
         // the generation check in the worker.
@@ -805,30 +1039,65 @@ void MyFilesLibrary::collect_files(nlohmann::json &out, int images)
     if (folder.empty())
         return;
 
+    // get_current_dir() already drops a sub-folder that no longer exists, so this only fails when
+    // the mapped root itself is gone.
+    fs::path                  dir(get_current_dir());
     boost::system::error_code ec;
-    fs::path                  root(folder);
-    if (!fs::is_directory(root, ec) || ec) {
+    if (dir.empty() || !fs::is_directory(dir, ec) || ec) {
         BOOST_LOG_TRIVIAL(warning) << "My Files folder missing or inaccessible: " << folder;
         return;
     }
 
-    std::vector<FileEntry> files;
+    std::vector<FolderEntry> folders;
+    std::vector<FileEntry>   files;
     files.reserve(64);
-    collect_recursive(root, 0, files);
+    // Sub-folder tiles are listed either way, so drilling down still works while the recursive
+    // view is on; only the set of files changes.
+    bool complete = list_directory(dir, folders, files);
+    if (get_recursive()) {
+        files.clear();
+        complete = collect_files_recursive(dir, std::string(), 0, files) && complete;
+    }
+    g_listing_truncated = !complete;
 
+    std::sort(folders.begin(), folders.end(), [](const FolderEntry &a, const FolderEntry &b) {
+        return a.path.filename().string() < b.path.filename().string();
+    });
     std::sort(files.begin(), files.end(), [](const FileEntry &a, const FileEntry &b) {
         if (a.mtime != b.mtime)
             return a.mtime > b.mtime;
         return a.path.filename().string() < b.path.filename().string();
     });
 
+    // dir == root / subdir, so a child's path relative to the root is just one more segment.
+    const std::string subdir = get_current_subdir();
+
+    for (const FolderEntry &entry : folders) {
+        const std::string name = entry.path.filename().string();
+        nlohmann::json    item;
+        item["is_dir"]       = true;
+        item["project_name"] = name;
+        item["path"]         = entry.path.string();
+        // Relative to the mapped root: this is what the page sends back to navigate into it.
+        item["rel"]          = subdir.empty() ? name : subdir + "/" + name;
+        item["file_count"]   = entry.file_count;
+        item["folder_count"] = entry.folder_count;
+        item["time"]         = entry.mtime > 0 ? wxDateTime(entry.mtime).FormatISOCombined(' ').ToStdString()
+                                               : std::string();
+        out.push_back(std::move(item));
+    }
+
     std::vector<std::string> queued;
     const int image_limit = images < 0 ? k_max_thumbs : std::min(images, k_max_thumbs);
     for (size_t i = 0; i < files.size(); ++i) {
         nlohmann::json item;
         const std::string path_u8 = files[i].path.string();
+        item["is_dir"]            = false;
         item["project_name"]      = files[i].path.filename().string();
         item["path"]              = path_u8;
+        // Only set in the recursive view; the page shows it so identically named files stay apart.
+        if (!files[i].rel_dir.empty())
+            item["rel_dir"] = files[i].rel_dir;
         if (files[i].mtime > 0) {
             item["time"] = wxDateTime(files[i].mtime).FormatISOCombined(' ').ToStdString();
             if ((int) i < image_limit) {

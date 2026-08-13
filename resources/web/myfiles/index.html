@@ -23,9 +23,15 @@
 	<div id="MyFilesHeader">
 		<div id="MyFilesTitleBlock">
 			<div id="MyFilesTitle" class="Content-Title trans TextS1" tid="t_mf1">My Files</div>
+			<div id="MyFilesBreadcrumb" class="TextS2" style="display:none;"></div>
 			<div id="MyFilesFolderPath" class="TextS2" title=""></div>
 		</div>
 		<div id="MyFilesActions">
+			<div id="MyFilesUpBtn" class="MyFilesActionBtn trans TextS1" tid="t_mf20" style="display:none;" onClick="OnMyFilesGoUp()">Up</div>
+			<label id="MyFilesRecursiveBlock" class="TextS2" title="">
+				<input type="checkbox" id="MyFilesRecursive" onChange="OnToggleMyFilesRecursive(this.checked)" />
+				<span class="trans" tid="t_mf27">Include sub-folders</span>
+			</label>
 			<div id="MyFilesSortBlock">
 				<label for="MyFilesSort" class="TextS2 trans" tid="t_mf13">Sort by</label>
 				<select id="MyFilesSort" class="TextS1" onChange="OnChangeMyFilesSort(this.value)">
@@ -67,14 +73,16 @@
 		<div class="Content-Title TextS1 trans" tid="t_mf6">No supported files found in this folder.</div>
 	</div>
 
+	<div id="MyFilesTruncated" class="TextS2 trans" tid="t_mf21" style="display:none;">More files were found than can be listed at once — some are not shown.</div>
+
 	<div id="MyFilesProgress" style="display:none;">
 		<div id="MyFilesProgressLabel" class="TextS2"><span class="trans" tid="t_mf12">Generating previews</span> <span id="MyFilesProgressCount"></span></div>
 		<div id="MyFilesProgressTrack"><div id="MyFilesProgressBar"></div></div>
 	</div>
 
 	<div id="MyFilesHint" class="TextS2" style="display:none;">
-		<span id="MyFilesHintWin" class="trans" tid="t_mf18">Double-click to open. Ctrl+click or Shift+click to select several files.</span>
-		<span id="MyFilesHintMac" class="trans" tid="t_mf19" style="display:none;">Double-click to open. ⌘+click or Shift+click to select several files.</span>
+		<span id="MyFilesHintWin" class="trans" tid="t_mf18">Double-click to open a file or folder. Ctrl+click or Shift+click to select several files. Backspace goes up a folder.</span>
+		<span id="MyFilesHintMac" class="trans" tid="t_mf19" style="display:none;">Double-click to open a file or folder. ⌘+click or Shift+click to select several files. Backspace goes up a folder.</span>
 	</div>
 
 	<div id="RecentFileArea">

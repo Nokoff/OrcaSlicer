@@ -458,10 +458,15 @@ void WebViewPanel::SendMyFilesList(int images)
     nlohmann::json req;
     nlohmann::json data;
     MyFilesLibrary::collect_files(data, images);
-    req["sequence_id"] = "";
-    req["command"]     = "get_my_files";
-    req["folder"]      = MyFilesLibrary::get_folder_path();
-    req["response"]    = data;
+    req["sequence_id"]    = "";
+    req["command"]        = "get_my_files";
+    req["folder"]         = MyFilesLibrary::get_folder_path();
+    // Where inside the mapped folder the listing came from, for the breadcrumb.
+    req["subfolder"]      = MyFilesLibrary::get_current_subdir();
+    req["current_folder"] = MyFilesLibrary::get_current_dir();
+    req["recursive"]      = MyFilesLibrary::get_recursive();
+    req["truncated"]      = MyFilesLibrary::last_listing_truncated();
+    req["response"]       = data;
     const wxString payload = wxString::FromUTF8(req.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore));
     wxString strJS = wxString::Format(
         "window.dispatchMyFilesMessage ? window.dispatchMyFilesMessage(%s) : window.postMessage(%s)", payload, payload);
