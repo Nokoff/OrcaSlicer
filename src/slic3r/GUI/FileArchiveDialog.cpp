@@ -215,7 +215,7 @@ FileArchiveDialog::FileArchiveDialog(wxWindow* parent_window, mz_zip_archive* ar
         return struct_size + 1;
     };
 
-    const std::regex pattern_drop(".*[.](stl|obj|amf|3mf|step|stp)", std::regex::icase);
+    const std::regex pattern_drop(".*[.](stl|obj|glb|gltf|amf|3mf|step|stp)", std::regex::icase);
     mz_uint num_entries = mz_zip_reader_get_num_files(archive);
     mz_zip_archive_file_stat stat;
     std::vector<std::pair<boost::filesystem::path, size_t>> filtered_entries; // second is unzipped size

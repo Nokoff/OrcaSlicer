@@ -105,7 +105,7 @@ bool can_generate_mesh_thumbnail(const std::string &path)
     const std::string ext = lower_extension(path);
     // Mesh formats we can load quickly enough for library icons.
     // STEP/SVG are skipped (too heavy / not triangle meshes).
-    return ext == ".stl" || ext == ".oltp" || ext == ".obj" || ext == ".3mf" || ext == ".amf"
+    return ext == ".stl" || ext == ".oltp" || ext == ".obj" || ext == ".glb" || ext == ".gltf" || ext == ".3mf" || ext == ".amf"
 #ifdef __APPLE__
            || ext == ".ply"
 #endif
