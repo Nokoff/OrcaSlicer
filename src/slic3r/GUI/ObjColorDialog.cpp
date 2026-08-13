@@ -12,6 +12,7 @@
 #include "slic3r/Utils/ColorSpaceConvert.hpp"
 #include "MainFrame.hpp"
 #include "libslic3r/Config.hpp"
+#include "libslic3r/libslic3r.h"
 #include "BitmapComboBox.hpp"
 #include "Widgets/ComboBox.hpp"
 #include <wx/sizer.h>
@@ -42,8 +43,6 @@ static void update_ui(wxWindow* window)
 }
 
 static const char g_min_cluster_color = 1;
-//static const char g_max_cluster_color = 15;
-static const char g_max_color = 16;
 const  StateColor ok_btn_bg(std::pair<wxColour, int>(wxColour(0, 137, 123), StateColor::Pressed),
                      std::pair<wxColour, int>(wxColour(38, 166, 154), StateColor::Hovered),
                      std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal));
@@ -396,7 +395,8 @@ bool ObjColorPanel::is_ok() {
 
 void ObjColorPanel::update_filament_ids()
 {
-    const int existing_filament_count = static_cast<int>(m_colours.size());
+    const int existing_filament_count          = static_cast<int>(m_colours.size());
+    const int existing_physical_filament_count = std::clamp(wxGetApp().filaments_cnt(), 0, existing_filament_count);
     std::map<int, int> appended_filament_id_map;
 
     if (!m_new_add_colors.empty()) {
@@ -409,23 +409,35 @@ void ObjColorPanel::update_filament_ids()
         }
 
         std::sort(selected_appended_indices.begin(), selected_appended_indices.end());
-        selected_appended_indices.erase(std::unique(selected_appended_indices.begin(), selected_appended_indices.end()), selected_appended_indices.end());
+        selected_appended_indices.erase(std::unique(selected_appended_indices.begin(), selected_appended_indices.end()),
+                                        selected_appended_indices.end());
 
-        int next_filament_id = existing_filament_count + 1;
         for (int combo_selection : selected_appended_indices) {
             const int new_color_idx = combo_selection - existing_filament_count - 1;
             if (new_color_idx < 0 || new_color_idx >= static_cast<int>(m_new_add_colors.size())) {
                 continue;
             }
 
+            const int old_physical_filament_count = wxGetApp().filaments_cnt();
             wxGetApp().sidebar().add_custom_filament(m_new_add_colors[new_color_idx]);
-            appended_filament_id_map.emplace(combo_selection, next_filament_id++);
+            const int new_physical_filament_count = wxGetApp().filaments_cnt();
+            if (new_physical_filament_count > old_physical_filament_count) {
+                appended_filament_id_map.emplace(combo_selection, new_physical_filament_count);
+            }
         }
     }
 
-    auto resolve_filament_id = [&appended_filament_id_map](int mapped_filament_id) {
+    auto resolve_filament_id = [&](int mapped_filament_id) {
         const auto it = appended_filament_id_map.find(mapped_filament_id);
-        const int resolved_filament_id = it == appended_filament_id_map.end() ? mapped_filament_id : it->second;
+        if (it != appended_filament_id_map.end()) {
+            return static_cast<unsigned char>(it->second);
+        }
+
+        const bool is_existing_mixed_filament =
+            mapped_filament_id > existing_physical_filament_count && mapped_filament_id <= existing_filament_count;
+        const int resolved_filament_id = is_existing_mixed_filament ?
+                                             mapped_filament_id + static_cast<int>(appended_filament_id_map.size()) :
+                                             mapped_filament_id;
         return static_cast<unsigned char>(resolved_filament_id);
     };
 
@@ -471,11 +483,12 @@ wxBoxSizer *ObjColorPanel::create_add_btn_sizer(wxWindow *parent)
     StateColor calc_btn_bd(std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal));
     StateColor calc_btn_text(std::pair<wxColour, int>(wxColour(255, 255, 254), StateColor::Normal));
     // create btn
-    m_quick_add_btn = new Button(parent, _L("Append"));
-    m_quick_add_btn->SetToolTip(_L("Add consumable extruder after existing extruders."));
+    m_quick_add_btn = new Button(parent, _L("Keep all colors"));
+    m_quick_add_btn->SetToolTip(
+        _L("Keep every imported color, reusing exact filament matches and adding only missing colors."));
     auto cur_btn    = m_quick_add_btn;
     cur_btn->SetFont(Label::Body_13);
-    cur_btn->SetMinSize(wxSize(FromDIP(60), FromDIP(20)));
+    cur_btn->SetMinSize(wxSize(FromDIP(110), FromDIP(20)));
     cur_btn->SetCornerRadius(FromDIP(10));
     cur_btn->SetBackgroundColor(calc_btn_bg);
     cur_btn->SetBorderColor(calc_btn_bd);
@@ -633,13 +646,14 @@ int ObjColorPanel::find_filament_selection_by_color(const wxColour &color) const
 
 int ObjColorPanel::append_new_filament_option(const wxColour &color)
 {
-    if (m_colours.size() + m_new_add_colors.size() >= g_max_color) {
+    if (m_colours.size() + m_new_add_colors.size() >= MAXIMUM_FILAMENT_NUMBER) {
         return 0;
     }
 
     m_new_add_colors.emplace_back(color);
     const int selection = static_cast<int>(m_colours.size() + m_new_add_colors.size());
-    auto *    bitmap    = get_extruder_color_icon(color.GetAsString(wxC2S_HTML_SYNTAX).ToStdString(), std::to_string(selection), m_combox_icon_width, m_combox_icon_height);
+    auto *bitmap = get_extruder_color_icon(color.GetAsString(wxC2S_HTML_SYNTAX).ToStdString(), std::to_string(selection),
+                                           m_combox_icon_width, m_combox_icon_height);
 
     for (auto *item : m_result_icon_list) {
         if (item->bitmap_combox == nullptr) {
@@ -685,7 +699,9 @@ void ObjColorPanel::deal_keep_color_btn(int id)
     }
 
     if (selection == 0) {
-        m_warning_text->SetLabelText(_L("Warning: The count of newly added and \ncurrent extruders exceeds 16."));
+        m_warning_text->SetLabelText(
+            wxString::Format(_L("Warning: The combined count of current and imported filament colors exceeds %d."),
+                             static_cast<int>(MAXIMUM_FILAMENT_NUMBER)));
         return;
     }
 
@@ -849,14 +865,15 @@ void ObjColorPanel::deal_default_strategy()
 
 void ObjColorPanel::deal_add_btn()
 {
-    if (m_colours.size() >= g_max_color) { return; }
     deal_reset_btn();
     bool is_exceed = false;
     std::vector<int> appended_selections;
-    appended_selections.reserve(m_cluster_colors_from_algo.size());
-    for (size_t i = 0; i < m_cluster_colors_from_algo.size(); i++) {
-        const wxColour cur_color  = convert_to_wxColour(m_cluster_colors_from_algo[i]);
-        const int      selection  = append_new_filament_option(cur_color);
+    appended_selections.reserve(m_cluster_colours.size());
+    for (const wxColour &cluster_color : m_cluster_colours) {
+        int selection = find_filament_selection_by_color(cluster_color);
+        if (selection == 0) {
+            selection = append_new_filament_option(cluster_color);
+        }
         if (selection == 0) {
             is_exceed = true;
             break;
@@ -865,7 +882,9 @@ void ObjColorPanel::deal_add_btn()
     }
     if (is_exceed) {
         deal_approximate_match_btn();
-        m_warning_text->SetLabelText(_L("Warning: The count of newly added and \ncurrent extruders exceeds 16."));
+        m_warning_text->SetLabelText(
+            wxString::Format(_L("Warning: The combined count of current and imported filament colors exceeds %d."),
+                             static_cast<int>(MAXIMUM_FILAMENT_NUMBER)));
         return;
     }
 
@@ -874,6 +893,8 @@ void ObjColorPanel::deal_add_btn()
         m_cluster_map_filaments[i] = appended_selections[i];
     }
 
+    m_warning_text->SetLabelText(
+        _L("Note: All imported colors have been kept. You can choose OK to continue or adjust them manually."));
     update_keep_color_buttons();
 }
 

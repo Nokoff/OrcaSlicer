@@ -8127,16 +8127,19 @@ msgstr ""
 msgid "Approximate color matching."
 msgstr ""
 
-msgid "Append"
+msgid "Keep all colors"
 msgstr ""
 
-msgid "Add consumable extruder after existing extruders."
+msgid "Keep every imported color, reusing exact filament matches and adding only missing colors."
 msgstr ""
 
 msgid "Keep color"
 msgstr ""
 
 msgid "Add this cluster color as a new filament."
+msgstr ""
+
+msgid "Note: All imported colors have been kept. You can choose OK to continue or adjust them manually."
 msgstr ""
 
 msgid "Reset mapped extruders."
@@ -8153,9 +8156,7 @@ msgid ""
 "to continue or manually adjust it."
 msgstr ""
 
-msgid ""
-"Warning: The count of newly added and \n"
-"current extruders exceeds 16."
+msgid "Warning: The combined count of current and imported filament colors exceeds %d."
 msgstr ""
 
 msgid "Ramming customization"

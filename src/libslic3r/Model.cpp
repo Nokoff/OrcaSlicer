@@ -47,9 +47,6 @@
 #define _L(s) Slic3r::I18N::translate(s)
 
 namespace Slic3r {
-const std::vector<std::string> CONST_FILAMENTS = {
-    "", "4", "8", "0C", "1C", "2C", "3C", "4C", "5C", "6C", "7C", "8C", "9C", "AC", "BC", "CC", "DC",
-}; // 5                           10                            15    16
     // BBS initialization of static variables
     std::map<size_t, ExtruderParams> Model::extruderParamsMap = { {0,{"",0,0}}};
     GlobalSpeedMap Model::printSpeedMap{};
@@ -3086,13 +3083,30 @@ void Model::setExtruderParams(const DynamicPrintConfig& config, int extruders_co
     }
 }
 
-static void get_real_filament_id(const unsigned char &id, std::string &result) {
-    if (id < CONST_FILAMENTS.size()) {
-        result = CONST_FILAMENTS[id];
-    } else {
-        result = "";//error
+static std::string serialized_filament_state(const unsigned char id)
+{
+    if (id == 0)
+        return {};
+
+    auto hex_digit = [](const unsigned int value) {
+        return static_cast<char>(value < 10 ? '0' + value : 'A' + value - 10);
+    };
+
+    if (id < 3)
+        return std::string(1, hex_digit(id << 2));
+
+    // TriangleSelector encodes states >= 3 as the 0xC prefix followed by
+    // base-15 extension nibbles. FacetsAnnotation strings store those nibbles
+    // in reverse order.
+    std::string  result(1, 'C');
+    unsigned int remaining = id - 3;
+    while (remaining >= 15) {
+        result.insert(result.begin(), 'F');
+        remaining -= 15;
     }
-};
+    result.insert(result.begin(), hex_digit(remaining));
+    return result;
+}
 
 bool Model::obj_import_vertex_color_deal(const std::vector<unsigned char> &vertex_filament_ids, const unsigned char &first_extruder_id, Model *model)
 {
@@ -3154,16 +3168,14 @@ bool Model::obj_import_vertex_color_deal(const std::vector<unsigned char> &verte
                 calc_vertex_color_case(filament_id0, filament_id1, filament_id2, vertex_color_case, iso_index);
                 switch (vertex_color_case) {
                 case _3_SAME_COLOR: {
-                    std::string result;
-                    get_real_filament_id(filament_id0, result);
+                    const std::string result = serialized_filament_state(filament_id0);
                     volume->mmu_segmentation_facets.set_triangle_from_string(i, result);
                     break;
                 }
                 case _3_DIFF_COLOR: {
-                    std::string result0, result1, result2;
-                    get_real_filament_id(filament_id0, result0);
-                    get_real_filament_id(filament_id1, result1);
-                    get_real_filament_id(filament_id2, result2);
+                    const std::string result0 = serialized_filament_state(filament_id0);
+                    const std::string result1 = serialized_filament_state(filament_id1);
+                    const std::string result2 = serialized_filament_state(filament_id2);
 
                     auto v0 = volume->mesh().its.vertices[face[0]];
                     auto v1 = volume->mesh().its.vertices[face[1]];
@@ -3194,10 +3206,9 @@ bool Model::obj_import_vertex_color_deal(const std::vector<unsigned char> &verte
                     break;
                 }
                 case _2_SAME_1_DIFF_COLOR: {
-                    std::string result0, result1, result2;
-                    get_real_filament_id(filament_id0, result0);
-                    get_real_filament_id(filament_id1, result1);
-                    get_real_filament_id(filament_id2, result2);
+                    const std::string result0 = serialized_filament_state(filament_id0);
+                    const std::string result1 = serialized_filament_state(filament_id1);
+                    const std::string result2 = serialized_filament_state(filament_id2);
                     if (iso_index == 0) {
                         volume->mmu_segmentation_facets.set_triangle_from_string(i, result0 + result1 + result1 + "2");
                     } else if (iso_index == 1) {
@@ -3233,8 +3244,7 @@ bool Model::obj_import_face_color_deal(const std::vector<unsigned char> &face_fi
                 auto face         = volume->mesh().its.indices[i];
                 auto filament_id = face_filament_ids[i];
                 if (filament_id <= 1) { continue; }
-                std::string result;
-                get_real_filament_id(filament_id, result);
+                const std::string result = serialized_filament_state(filament_id);
                 volume->mmu_segmentation_facets.set_triangle_from_string(i, result);
             }
             return true;
