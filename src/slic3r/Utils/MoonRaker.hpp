@@ -50,6 +50,8 @@ public:
     bool can_test() const override { return true; }
     PrintHostPostUploadActions get_post_upload_actions() const override { return PrintHostPostUploadAction::StartPrint; }
     std::string get_host() const override { return m_host; }
+    // make_url() already strips the MQTT port off m_host, so this yields the plain HTTP root.
+    std::string get_file_base_url() const override { return make_url(""); }
     const std::string& get_apikey() const { return m_apikey; }
     const std::string& get_cafile() const { return m_cafile; }
 

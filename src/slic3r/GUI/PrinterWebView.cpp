@@ -15,6 +15,8 @@
 #include <slic3r/GUI/Widgets/WebView.hpp>
 #include <wx/webview.h>
 #include "slic3r/GUI/SSWCP.hpp"
+#include "slic3r/GUI/PrinterFileManager.hpp"
+#include "slic3r/GUI/Widgets/Button.hpp"
 #include "sentry_wrapper/SentryWrapper.hpp"
 
 namespace pt = boost::property_tree;
@@ -42,6 +44,17 @@ PrinterWebView::PrinterWebView(wxWindow *parent)
     m_browser->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &PrinterWebView::OnScriptMessage, this, m_browser->GetId());
 
     SetSizer(topsizer);
+
+    // The device page itself is a Flutter app we cannot extend, and it offers no way to download or
+    // delete what it lists. This strip opens a native browser over the same printer file APIs.
+    auto* toolbar = new wxBoxSizer(wxHORIZONTAL);
+    auto* files_btn = new ::Button(this, _L("Printer files"));
+    files_btn->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+    files_btn->SetToolTip(_L("Browse, download and delete the model files and timelapses stored on the printer"));
+    files_btn->Bind(wxEVT_BUTTON, &PrinterWebView::OnManageFiles, this);
+    toolbar->AddStretchSpacer();
+    toolbar->Add(files_btn, 0, wxALL, FromDIP(4));
+    topsizer->Add(toolbar, wxSizerFlags().Expand());
 
     topsizer->Add(m_browser, wxSizerFlags().Expand().Proportion(1));
 
@@ -183,6 +196,12 @@ void PrinterWebView::OnLoaded(wxWebViewEvent &evt)
     if (evt.GetURL().IsEmpty())
         return;
     SendAPIKey();
+}
+
+void PrinterWebView::OnManageFiles(wxCommandEvent& evt)
+{
+    PrinterFilesDialog dlg(this);
+    dlg.ShowModal();
 }
 
 void PrinterWebView::OnScriptMessage(wxWebViewEvent& evt) {

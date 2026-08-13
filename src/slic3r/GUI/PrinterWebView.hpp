@@ -50,6 +50,7 @@ public:
 
 private:
     void SendAPIKey();
+    void OnManageFiles(wxCommandEvent& evt);
 
     wxWebView* m_browser;
     long m_zoomFactor;

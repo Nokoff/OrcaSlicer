@@ -74,6 +74,11 @@ public:
     // Returns false if not supported or fail.
     virtual bool get_storage(wxArrayString& /*storage_path*/, wxArrayString& /*storage_name*/) const { return false; }
 
+    // Base URL the printer serves its files from, with a trailing slash (e.g. "http://192.168.1.7/").
+    // Appending "server/files/<root>/<path>" to it yields a downloadable file. Empty when the host
+    // has no HTTP file endpoint.
+    virtual std::string get_file_base_url() const { return {}; }
+
     static PrintHost* get_print_host(DynamicPrintConfig *config, bool change_engine = true);
 
     virtual bool send_gcodes(const std::vector<std::string>& codes, std::string& extraInfo) { return false; }
