@@ -4556,6 +4556,23 @@ std::string GUI_App::handle_web_request(std::string cmd)
                 if (mainframe && mainframe->m_webview)
                     mainframe->m_webview->SendMyFilesList(INT_MAX);
             }
+            else if (command_str == "myfiles_open_folder") {
+                // Empty / missing path navigates back to the mapped root.
+                std::string rel;
+                if (root.get_child_optional("data") != boost::none)
+                    rel = root.get_child("data").get_optional<std::string>("path").value_or(std::string());
+                MyFilesLibrary::set_current_subdir(rel);
+                if (mainframe && mainframe->m_webview)
+                    mainframe->m_webview->SendMyFilesList(INT_MAX);
+            }
+            else if (command_str == "myfiles_set_recursive") {
+                bool on = false;
+                if (root.get_child_optional("data") != boost::none)
+                    on = root.get_child("data").get_optional<bool>("recursive").value_or(false);
+                MyFilesLibrary::set_recursive(on);
+                if (mainframe && mainframe->m_webview)
+                    mainframe->m_webview->SendMyFilesList(INT_MAX);
+            }
             else if (command_str == "myfiles_select_folder" || command_str == "myfiles_change_folder") {
                 CallAfter([this] {
                     if (mainframe && MyFilesLibrary::select_folder(mainframe) && mainframe->m_webview)
@@ -4572,7 +4589,8 @@ std::string GUI_App::handle_web_request(std::string cmd)
             else if (command_str == "myfiles_explore_file") {
                 if (root.get_child_optional("data") != boost::none) {
                     const auto path = root.get_child("data").get_optional<std::string>("path");
-                    if (path && MyFilesLibrary::is_file_in_library(*path)) {
+                    // Folders are addressed the same way, so the context menu works on them too.
+                    if (path && (MyFilesLibrary::is_file_in_library(*path) || MyFilesLibrary::is_folder_in_library(*path))) {
                         boost::filesystem::path file_path(*path);
                         desktop_open_any_folder(file_path.make_preferred().string());
                     }

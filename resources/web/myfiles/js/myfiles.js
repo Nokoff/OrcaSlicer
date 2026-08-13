@@ -11,6 +11,21 @@ var MYFILES_SORT_KEY = 'myfiles_sort';
 var MYFILES_SORT_MODES = ['date_desc', 'date_asc', 'name_asc', 'name_desc'];
 var m_FileList = [];
 var m_SortMode = 'date_desc';
+// Folder being browsed, relative to the mapped root ('' = the root itself).
+var m_Subfolder = '';
+var m_CurrentFolder = '';
+// "Include sub-folders": owned by the backend (persisted in AppConfig) and echoed in every listing.
+var m_Recursive = false;
+
+function EscapeHtml(text)
+{
+	return String(text === null || text === undefined ? '' : text)
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;');
+}
 
 function SendMyFilesMessage(message)
 {
@@ -30,11 +45,17 @@ function OnInit()
 	SendMsg_GetMyFiles();
 	BindContextMenuChrome();
 	$(document).keydown(function (e) {
+		var typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
 		if (e.keyCode === 27)
 			ClearMyFilesSelection();
-		else if ((e.keyCode === 46 || e.keyCode === 8) && m_SelectedPaths.length > 0 && !(e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'))) {
+		else if ((e.keyCode === 46 || e.keyCode === 8) && m_SelectedPaths.length > 0 && !typing) {
 			e.preventDefault();
 			OnDeleteSelectedMyFiles();
+		}
+		// Backspace with nothing selected, or Alt+Left, walks back up the tree.
+		else if ((e.keyCode === 8 || (e.keyCode === 37 && e.altKey)) && m_SelectedPaths.length <= 0 && !typing) {
+			e.preventDefault();
+			OnMyFilesGoUp();
 		}
 	});
 }
@@ -134,6 +155,40 @@ function OnChangeMyFilesFolder()
 function OnRefreshMyFiles()
 {
 	SendMsg_GetMyFiles();
+}
+
+// rel is relative to the mapped root; '' goes back to the root.
+function OnOpenMyFolder(rel)
+{
+	var tSend = {};
+	tSend['sequence_id'] = Math.round(new Date() / 1000);
+	tSend['command'] = "myfiles_open_folder";
+	tSend['data'] = {};
+	tSend['data']['path'] = rel || '';
+	SendMyFilesMessage(JSON.stringify(tSend));
+}
+
+function OnMyFilesGoUp()
+{
+	if (!m_Subfolder)
+		return;
+	var idx = m_Subfolder.lastIndexOf('/');
+	OnOpenMyFolder(idx > 0 ? m_Subfolder.substring(0, idx) : '');
+}
+
+function OnCrumbClick(el)
+{
+	OnOpenMyFolder($(el).attr('frel') || '');
+}
+
+function OnToggleMyFilesRecursive(on)
+{
+	var tSend = {};
+	tSend['sequence_id'] = Math.round(new Date() / 1000);
+	tSend['command'] = "myfiles_set_recursive";
+	tSend['data'] = {};
+	tSend['data']['recursive'] = !!on;
+	SendMyFilesMessage(JSON.stringify(tSend));
 }
 
 function OnOpenMyFile(strPath)
@@ -241,7 +296,8 @@ function UpdateSelectionBar()
 
 function SelectPathRange(fromPath, toPath)
 {
-	var items = $(".FileItem");
+	// Folders sit in the same grid but are never part of a file selection.
+	var items = $(".FileItem").not(".FolderItem");
 	var fromIdx = -1;
 	var toIdx = -1;
 	for (var i = 0; i < items.length; i++) {
@@ -263,11 +319,81 @@ function SelectPathRange(fromPath, toPath)
 		m_SelectedPaths.push($(items[j]).attr('fpath'));
 }
 
-function UpdateHeaderState(folder, fileCount)
+// Looks a string up in the shared text.js table; used for counts built at render time.
+function MyFilesText(tid, fallback)
+{
+	try {
+		var lang = localStorage.getItem(LANG_COOKIE_NAME);
+		if (!LangText.hasOwnProperty(lang))
+			lang = "en";
+		if (LangText[lang].hasOwnProperty(tid))
+			return LangText[lang][tid];
+	} catch (e) {
+		// text.js not loaded or storage disabled: fall through to the English default.
+	}
+	return fallback;
+}
+
+function FolderSummary(item)
+{
+	var files = parseInt(item['file_count'], 10) || 0;
+	var folders = parseInt(item['folder_count'], 10) || 0;
+	var parts = [];
+	if (files > 0)
+		parts.push(files + " " + MyFilesText(files === 1 ? 't_mf22' : 't_mf23', files === 1 ? "file" : "files"));
+	if (folders > 0)
+		parts.push(folders + " " + MyFilesText(folders === 1 ? 't_mf24' : 't_mf25', folders === 1 ? "folder" : "folders"));
+	if (parts.length <= 0)
+		return MyFilesText('t_mf26', "Empty");
+	return parts.join(" · ");
+}
+
+function FolderDisplayName(path)
+{
+	var cleaned = String(path || '').replace(/[\\\/]+$/, '');
+	var idx = Math.max(cleaned.lastIndexOf('/'), cleaned.lastIndexOf('\\'));
+	var name = idx >= 0 ? cleaned.substring(idx + 1) : cleaned;
+	// Drive roots ("C:\") have no trailing segment; fall back to the raw path.
+	return name || cleaned;
+}
+
+function RenderBreadcrumb()
+{
+	if (!m_FolderPath) {
+		$("#MyFilesBreadcrumb").hide();
+		$("#MyFilesUpBtn").hide();
+		return;
+	}
+
+	var segments = m_Subfolder ? m_Subfolder.split('/') : [];
+	var html = '<span class="MyFilesCrumb" frel="" onClick="OnCrumbClick(this)">' +
+		EscapeHtml(FolderDisplayName(m_FolderPath)) + '</span>';
+	var rel = '';
+	for (var i = 0; i < segments.length; i++) {
+		if (!segments[i])
+			continue;
+		rel = rel ? (rel + '/' + segments[i]) : segments[i];
+		html += '<span class="MyFilesCrumbSep">/</span>';
+		if (i === segments.length - 1) {
+			// The folder you are already in is a label, not a link.
+			html += '<span class="MyFilesCrumbCurrent">' + EscapeHtml(segments[i]) + '</span>';
+		} else {
+			html += '<span class="MyFilesCrumb" frel="' + EscapeHtml(rel) + '" onClick="OnCrumbClick(this)">' +
+				EscapeHtml(segments[i]) + '</span>';
+		}
+	}
+
+	$("#MyFilesBreadcrumb").html(html).css("display", "flex");
+	$("#MyFilesUpBtn").toggle(!!m_Subfolder);
+}
+
+function UpdateHeaderState(folder, entryCount)
 {
 	m_FolderPath = folder || '';
-	$("#MyFilesFolderPath").text(m_FolderPath);
-	$("#MyFilesFolderPath").attr("title", m_FolderPath);
+	var shownPath = m_CurrentFolder || m_FolderPath;
+	$("#MyFilesFolderPath").text(shownPath);
+	$("#MyFilesFolderPath").attr("title", shownPath);
+	RenderBreadcrumb();
 
 	if (!m_FolderPath) {
 		$("#MyFilesEmptyState").css("display", "flex");
@@ -278,13 +404,19 @@ function UpdateHeaderState(folder, fileCount)
 		$("#MyFilesChangeFolderBtn").hide();
 		$("#MyFilesRefreshBtn").hide();
 		$("#MyFilesSortBlock").hide();
+		$("#MyFilesRecursiveBlock").hide();
 		$("#MyFilesHint").hide();
 	} else {
 		$("#MyFilesEmptyState").hide();
 		$("#MyFilesChooseFolderBtn").hide();
 		$("#MyFilesChangeFolderBtn").show();
 		$("#MyFilesRefreshBtn").show();
-		if (fileCount <= 0) {
+		// Stays available on an empty folder: it is how you find out the files are further down.
+		$("#MyFilesRecursiveBlock").css("display", "flex");
+		if (entryCount <= 0) {
+			$("#MyFilesEmptyList > div").text(m_Recursive
+				? MyFilesText('t_mf28', "No supported files in this folder or below it.")
+				: MyFilesText('t_mf6', "No supported files found in this folder."));
 			$("#MyFilesEmptyList").show();
 			$("#RecentFileArea").hide();
 			$("#MyFilesSelectionBar").hide();
@@ -340,6 +472,9 @@ function SortMyFiles(list)
 
 	sorted.sort(function (a, b) {
 		var diff;
+		// Folders always lead, whichever sort is active, so navigation stays predictable.
+		if (!!a['is_dir'] !== !!b['is_dir'])
+			return a['is_dir'] ? -1 : 1;
 		if (byName) {
 			// Numeric collation so "part2" sorts before "part10".
 			diff = String(a['project_name'] || '').localeCompare(String(b['project_name'] || ''),
@@ -377,8 +512,13 @@ function MyFileSortDate(item)
 function ShowMyFilesList(payload)
 {
 	var folder = payload["folder"] || "";
+	m_Subfolder = payload["subfolder"] || "";
+	m_CurrentFolder = payload["current_folder"] || folder;
+	m_Recursive = !!payload["recursive"];
+	$("#MyFilesRecursive").prop("checked", m_Recursive);
 	m_FileList = payload["response"] || [];
 	UpdateHeaderState(folder, m_FileList.length);
+	$("#MyFilesTruncated").toggle(!!payload["truncated"]);
 	// The queue was just rebuilt; the backend re-announces progress if there is work left.
 	$("#MyFilesProgress").stop(true, true).hide();
 	RenderMyFilesList();
@@ -394,17 +534,31 @@ function RenderMyFilesList()
 	for (var n = 0; n < nTotal; n++) {
 		var OneFile = pList[n];
 		var sPath = OneFile['path'];
+		var sName = OneFile['project_name'];
+
+		if (OneFile['is_dir']) {
+			strHtml += '<div class="FileItem FolderItem" fpath="' + EscapeHtml(sPath) + '" frel="' + EscapeHtml(OneFile['rel'] || '') + '">' +
+				'<a class="FileTip" title="' + EscapeHtml(sPath) + '"></a>' +
+				'<div class="FileImg FolderImg"><div class="FolderGlyph"></div></div>' +
+				'<div class="FileName TextS1">' + EscapeHtml(sName) + '</div>' +
+				'<div class="FileDate">' + EscapeHtml(FolderSummary(OneFile)) + '</div>' +
+				'</div>';
+			continue;
+		}
+
 		var sImg = OneFile["image"] || sImages[sPath] || "../homepage/img/d.png";
 		var sTime = OneFile['time'];
-		var sName = OneFile['project_name'];
+		var sRelDir = OneFile['rel_dir'] || '';
 		sImages[sPath] = sImg;
 
-		strHtml += '<div class="FileItem" fpath="' + sPath + '">' +
-			'<a class="FileTip" title="' + sPath + '"></a>' +
+		strHtml += '<div class="FileItem" fpath="' + EscapeHtml(sPath) + '">' +
+			'<a class="FileTip" title="' + EscapeHtml(sPath) + '"></a>' +
 			'<div class="FileCheck"></div>' +
-			'<div class="FileImg"><img src="' + sImg + '" onerror="this.onerror=null;this.src=\'../homepage/img/d.png\';" alt="No Image" /></div>' +
-			'<div class="FileName TextS1">' + sName + '</div>' +
-			'<div class="FileDate">' + sTime + '</div>' +
+			'<div class="FileImg"><img src="' + EscapeHtml(sImg) + '" onerror="this.onerror=null;this.src=\'../homepage/img/d.png\';" alt="No Image" /></div>' +
+			'<div class="FileName TextS1">' + EscapeHtml(sName) + '</div>' +
+			// Only present in the recursive view, where two tiles can share a name.
+			(sRelDir ? '<div class="FileFrom" title="' + EscapeHtml(sRelDir) + '">' + EscapeHtml(sRelDir) + '</div>' : '') +
+			'<div class="FileDate">' + EscapeHtml(sTime) + '</div>' +
 			'</div>';
 	}
 	$("#FileList").html(strHtml);
@@ -418,12 +572,17 @@ function Set_MyFile_MouseEvents()
 	$(".FileItem").on("mousedown.myfiles", function (e) {
 		RightBtnFilePath = $(this).attr('fpath');
 		if (e.which == 3) {
-			if (!IsPathSelected(RightBtnFilePath)) {
+			// Folders cannot be deleted or moved from here, so they only get the explore entry
+			// and never join the file selection.
+			var isFolder = $(this).hasClass("FolderItem");
+			if (isFolder) {
+				ClearMyFilesSelection();
+			} else if (!IsPathSelected(RightBtnFilePath)) {
 				m_SelectedPaths = [RightBtnFilePath];
 				m_LastClickedPath = RightBtnFilePath;
 				ApplySelectionClasses();
 			}
-			ShowMyFileContextMenu();
+			ShowMyFileContextMenu(isFolder);
 			e.preventDefault();
 			return false;
 		}
@@ -431,6 +590,11 @@ function Set_MyFile_MouseEvents()
 	$(".FileItem").on("click.myfiles", function (e) {
 		var path = $(this).attr('fpath');
 		RightBtnFilePath = path;
+		if ($(this).hasClass("FolderItem")) {
+			// A folder is not part of a file selection; clicking one just parks the cursor there.
+			ClearMyFilesSelection();
+			return false;
+		}
 		var multi = e.ctrlKey || e.metaKey;
 		var range = e.shiftKey;
 		if (multi) {
@@ -458,13 +622,19 @@ function Set_MyFile_MouseEvents()
 			return false;
 		var path = $(this).attr('fpath');
 		RightBtnFilePath = path;
+		if ($(this).hasClass("FolderItem")) {
+			OnOpenMyFolder($(this).attr('frel') || '');
+			return false;
+		}
 		OnOpenMyFile(encodeURI(path));
 		return false;
 	});
 }
 
-function ShowMyFileContextMenu()
+function ShowMyFileContextMenu(isFolder)
 {
+	$("#CT_Delete_Bar").toggle(!isFolder);
+	$("#CT_Move_Bar").toggle(!isFolder);
 	$("#myfiles_context_menu").offset({ top: 10000, left: -10000 });
 	$('#myfiles_context_menu').show();
 

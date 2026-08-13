@@ -32,6 +32,81 @@ body {
 	text-overflow: ellipsis;
 }
 
+#MyFilesBreadcrumb {
+	display: none;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 2px;
+	font-size: 13px;
+}
+
+.MyFilesCrumb {
+	padding: 1px 5px;
+	border-radius: 4px;
+	color: #00695c;
+	cursor: pointer;
+	max-width: 220px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.MyFilesCrumb:hover {
+	background-color: #E5F0EE;
+	text-decoration: underline;
+}
+
+.MyFilesCrumbCurrent {
+	padding: 1px 5px;
+	font-weight: 600;
+	max-width: 260px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.MyFilesCrumbSep {
+	color: #A8A8A8;
+	user-select: none;
+}
+
+#MyFilesTruncated {
+	margin: 0 0 12px 0;
+	color: #8A8A90;
+}
+
+/* Folder tiles reuse the file grid, with a drawn folder in place of the preview image. */
+.FolderItem .FileImg {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: #EDF3F2;
+}
+
+.FolderItem:hover .FileImg {
+	background-color: #DCE9E7;
+}
+
+.FolderGlyph {
+	position: relative;
+	width: 96px;
+	height: 72px;
+	border-radius: 8px;
+	background-color: #009688;
+	opacity: 0.85;
+}
+
+.FolderGlyph::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: -10px;
+	width: 40px;
+	height: 14px;
+	border-radius: 6px 6px 0 0;
+	background-color: #009688;
+}
+
 #MyFilesActions {
 	display: flex;
 	align-items: center;
@@ -90,6 +165,33 @@ body {
 
 #MyFilesSelectionCount {
 	font-weight: 600;
+}
+
+#MyFilesRecursiveBlock {
+	display: none;
+	align-items: center;
+	gap: 6px;
+	height: 28px;
+	padding: 0 4px;
+	color: #6B6B70;
+	white-space: nowrap;
+	cursor: pointer;
+	user-select: none;
+}
+
+#MyFilesRecursive {
+	margin: 0;
+	cursor: pointer;
+	accent-color: #009688;
+}
+
+/* Origin folder shown on file tiles while the recursive view is on. */
+.FileFrom {
+	color: #009688;
+	font-size: 12px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 #MyFilesSortBlock {

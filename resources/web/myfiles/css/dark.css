@@ -4,6 +4,30 @@
 	color: #B3B3B5;
 }
 
+.MyFilesCrumb {
+	color: #4DB6AC;
+}
+
+.MyFilesCrumb:hover {
+	background-color: #3E3E45;
+}
+
+.MyFilesCrumbSep {
+	color: #6B6B70;
+}
+
+#MyFilesTruncated {
+	color: #8A8A90;
+}
+
+.FolderItem .FileImg {
+	background-color: #35353B;
+}
+
+.FolderItem:hover .FileImg {
+	background-color: #3E3E45;
+}
+
 .MyFilesActionBtn {
 	border-color: #3E3E45;
 }
@@ -39,6 +63,14 @@
 
 #MyFilesSortBlock label {
 	color: #9A9AA0;
+}
+
+#MyFilesRecursiveBlock {
+	color: #9A9AA0;
+}
+
+.FileFrom {
+	color: #4DB6AC;
 }
 
 #MyFilesSort {
