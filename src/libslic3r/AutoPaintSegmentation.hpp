@@ -27,9 +27,9 @@ struct SegmentationResult
     // The facet used to seed each region. Region numbering follows this vector.
     std::vector<size_t> region_seed_faces;
 
-    // Palette entry allocated to each region. Adjacent regions are assigned
-    // different entries where possible, and all available entries are balanced
-    // across the surface.
+    // Palette entry allocated to each region. Adjacent and nearby regions are
+    // assigned different entries where possible, and all available entries
+    // are balanced across the surface.
     std::vector<size_t> region_palette;
 
     [[nodiscard]] size_t region_count() const { return region_seed_faces.size(); }

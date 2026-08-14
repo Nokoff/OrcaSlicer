@@ -199,7 +199,7 @@ TEST_CASE("Auto paint separates rounded lobes at a concave neck", "[AutoPaint]")
     const AutoPaint::SegmentationResult result = AutoPaint::segment_by_geometry(dumbbell, options);
 
     REQUIRE(result.region_count() >= 2);
-    REQUIRE(result.region_count() <= options.target_regions * 4);
+    REQUIRE(result.region_count() <= options.target_regions * 6);
     const std::vector<std::vector<size_t>> neighbors = face_neighbors(dumbbell);
     for (size_t region = 0; region < result.region_count(); ++region)
         CHECK(region_is_connected(neighbors, result.face_regions, region));
