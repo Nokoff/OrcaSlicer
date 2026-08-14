@@ -110,6 +110,48 @@ indexed_triangle_set make_rounded_dumbbell()
     return mesh;
 }
 
+indexed_triangle_set make_smooth_tapered_limb()
+{
+    constexpr size_t rings    = 32;
+    constexpr size_t segments = 96;
+
+    indexed_triangle_set mesh;
+    mesh.vertices.emplace_back(0.f, 0.f, 0.f);
+    for (size_t ring = 1; ring < rings; ++ring) {
+        const float t      = float(ring) / float(rings);
+        const float radius = 3.2f - 1.2f * t + 0.35f * std::sin(2.f * float(PI) * t);
+        for (size_t segment = 0; segment < segments; ++segment) {
+            const float angle = 2.f * float(PI) * float(segment) / float(segments);
+            mesh.vertices.emplace_back(radius * std::cos(angle), radius * std::sin(angle), 10.f * t);
+        }
+    }
+    const int top_vertex = static_cast<int>(mesh.vertices.size());
+    mesh.vertices.emplace_back(0.f, 0.f, 10.f);
+
+    for (size_t segment = 0; segment < segments; ++segment) {
+        const int current = 1 + static_cast<int>(segment);
+        const int next    = 1 + static_cast<int>((segment + 1) % segments);
+        mesh.indices.emplace_back(0, next, current);
+    }
+    for (size_t ring = 0; ring + 2 < rings; ++ring) {
+        const int lower = 1 + static_cast<int>(ring * segments);
+        const int upper = lower + static_cast<int>(segments);
+        for (size_t segment = 0; segment < segments; ++segment) {
+            const int current = static_cast<int>(segment);
+            const int next    = static_cast<int>((segment + 1) % segments);
+            mesh.indices.emplace_back(lower + current, lower + next, upper + next);
+            mesh.indices.emplace_back(lower + current, upper + next, upper + current);
+        }
+    }
+    const int last_ring = 1 + static_cast<int>((rings - 2) * segments);
+    for (size_t segment = 0; segment < segments; ++segment) {
+        const int current = last_ring + static_cast<int>(segment);
+        const int next    = last_ring + static_cast<int>((segment + 1) % segments);
+        mesh.indices.emplace_back(current, next, top_vertex);
+    }
+    return mesh;
+}
+
 } // namespace
 
 TEST_CASE("Auto paint handles an empty mesh", "[AutoPaint]")
@@ -164,6 +206,19 @@ TEST_CASE("Auto paint keeps an uninterrupted rounded model together", "[AutoPain
 
     REQUIRE(result.region_count() == 1);
     REQUIRE(result.face_regions.size() == sphere.indices.size());
+    CHECK(std::all_of(result.face_regions.begin(), result.face_regions.end(), [](size_t region) { return region == 0; }));
+}
+
+TEST_CASE("Auto paint keeps a smoothly tapered limb together", "[AutoPaint]")
+{
+    const indexed_triangle_set     limb = make_smooth_tapered_limb();
+    AutoPaint::SegmentationOptions options;
+    options.target_regions      = 5;
+    options.boundary_preference = 0.8f;
+
+    const AutoPaint::SegmentationResult result = AutoPaint::segment_by_geometry(limb, options);
+
+    REQUIRE(result.region_count() == 1);
     CHECK(std::all_of(result.face_regions.begin(), result.face_regions.end(), [](size_t region) { return region == 0; }));
 }
 

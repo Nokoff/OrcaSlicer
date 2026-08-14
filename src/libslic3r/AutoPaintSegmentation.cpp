@@ -164,18 +164,19 @@ void snap_shape_boundaries_to_geometry(const std::vector<SurfaceEdge>& edges, fl
 {
     struct WeightedNeighbor
     {
-        size_t face   = 0;
-        float  weight = 0.f;
+        size_t face              = 0;
+        float  weight            = 0.f;
+        float  boundary_strength = 0.f;
     };
     struct FaceNeighborhood
     {
         std::array<WeightedNeighbor, 3> neighbors;
         size_t                          count = 0;
 
-        void add(size_t face, float weight)
+        void add(size_t face, float weight, float boundary_strength)
         {
             if (count < neighbors.size())
-                neighbors[count++] = {face, weight};
+                neighbors[count++] = {face, weight, boundary_strength};
         }
     };
 
@@ -191,8 +192,8 @@ void snap_shape_boundaries_to_geometry(const std::vector<SurfaceEdge>& edges, fl
         const float relative_strength = edge.boundary_strength / threshold;
         const float squared_strength  = relative_strength * relative_strength;
         const float weight            = 1.f / (1.f + squared_strength * squared_strength);
-        neighborhoods[edge.first_face].add(edge.second_face, weight);
-        neighborhoods[edge.second_face].add(edge.first_face, weight);
+        neighborhoods[edge.first_face].add(edge.second_face, weight, edge.boundary_strength);
+        neighborhoods[edge.second_face].add(edge.first_face, weight, edge.boundary_strength);
     }
 
     const std::vector<size_t> original_labels = labels;
@@ -233,8 +234,29 @@ void snap_shape_boundaries_to_geometry(const std::vector<SurfaceEdge>& edges, fl
                 if (candidate_scores[candidate] > candidate_scores[best_candidate])
                     best_candidate = candidate;
             }
+
+            const auto boundary_support = [&](size_t label) {
+                float  strength = 0.f;
+                size_t count    = 0;
+                for (size_t neighbor_idx = 0; neighbor_idx < neighborhoods[face_idx].count; ++neighbor_idx) {
+                    const WeightedNeighbor& neighbor = neighborhoods[face_idx].neighbors[neighbor_idx];
+                    if (labels[neighbor.face] != label) {
+                        strength += neighbor.boundary_strength;
+                        ++count;
+                    }
+                }
+                return count == 0 ? 0.f : strength / float(count);
+            };
+
+            const float current_support = boundary_support(labels[face_idx]);
+            const float new_support     = boundary_support(candidate_labels[best_candidate]);
+            // Never let a shape label simply wander across an uninterrupted
+            // limb. Boundary snapping is allowed only when it actually moves
+            // the contour onto a stronger crease or concave seam.
+            const bool geometry_support = new_support >= 0.35f * boundary_threshold &&
+                                          new_support > current_support + 0.05f * boundary_threshold;
             if (candidate_labels[best_candidate] != labels[face_idx] &&
-                candidate_scores[best_candidate] > candidate_scores[current_candidate] + switch_margin) {
+                candidate_scores[best_candidate] > candidate_scores[current_candidate] + switch_margin && geometry_support) {
                 labels[face_idx] = candidate_labels[best_candidate];
                 ++changed_count;
             }
