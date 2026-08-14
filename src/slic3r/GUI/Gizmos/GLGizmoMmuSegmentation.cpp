@@ -249,10 +249,11 @@ bool GLGizmoMmuSegmentation::on_init()
 
     // Geometry-aware automatic painting descriptions
     m_desc["auto_paint_colors"]   = _L("Automatic painting colors");
-    m_desc["auto_paint_boundary"] = _L("Follow geometry");
+    m_desc["auto_paint_boundary"] = _L("Part detail");
     m_desc["auto_paint"]          = _L("Auto paint model");
-    m_desc["auto_paint_tooltip"]  = _L("Replace the current painting with automatically allocated colors. Sharp creases and "
-                                        "disconnected parts are treated as likely boundaries; smooth areas are divided by surface distance.");
+    m_desc["auto_paint_tooltip"]  = _L("Replace the current painting by detecting natural parts from concave seams and modeled "
+                                        "creases, then distribute the selected colors across those parts. Higher detail keeps "
+                                        "smaller parts separate.");
 
     init_extruders_data();
 
@@ -1095,6 +1096,7 @@ void GLGizmoMmuSegmentation::auto_paint_model()
     AutoPaint::SegmentationOptions options;
     options.target_regions                           = filament_ids.size();
     options.boundary_preference                      = m_auto_paint_boundary_preference / 100.f;
+    wxBusyCursor wait;
     const AutoPaint::SegmentationResult segmentation = AutoPaint::segment_by_geometry(combined_mesh, options);
     if (segmentation.face_regions.size() != combined_mesh.indices.size() || segmentation.region_count() == 0)
         return;
@@ -1105,7 +1107,9 @@ void GLGizmoMmuSegmentation::auto_paint_model()
         selector.reset();
         for (size_t face_idx = 0; face_idx < face_counts[volume_idx]; ++face_idx) {
             const size_t combined_face_idx = face_offsets[volume_idx] + face_idx;
-            const size_t palette_idx       = segmentation.face_regions[combined_face_idx] % filament_ids.size();
+            const size_t region_idx        = segmentation.face_regions[combined_face_idx];
+            const size_t palette_idx       = region_idx < segmentation.region_palette.size() ? segmentation.region_palette[region_idx] :
+                                                                                               region_idx % filament_ids.size();
             selector.set_facet(static_cast<int>(face_idx), static_cast<EnforcerBlockerType>(filament_ids[palette_idx]));
         }
         selector.request_update_render_data(true);

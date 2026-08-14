@@ -26,6 +26,9 @@
 #include <CGAL/property_map.h>
 #include <CGAL/boost/graph/copy_face_graph.h>
 #include <CGAL/boost/graph/Face_filtered_graph.h>
+#include <CGAL/AABB_face_graph_triangle_primitive.h>
+#include <CGAL/AABB_traits.h>
+#include <CGAL/AABB_tree.h>
 // BBS: for boolean using mcut
 #include "mcut/include/mcut/mcut.h"
 
@@ -375,6 +378,51 @@ std::vector<TriangleMesh> segment(const TriangleMesh& src, double smoothing_alph
     }
 
     return out_meshes;
+}
+
+std::vector<size_t> segment_face_ids(const indexed_triangle_set& proxy_mesh,
+                                     const indexed_triangle_set& target_mesh,
+                                     double                      smoothing_alpha,
+                                     size_t                      segment_number,
+                                     size_t                      number_of_rays)
+{
+    std::vector<size_t> result;
+    if (proxy_mesh.indices.empty() || target_mesh.indices.empty())
+        return result;
+
+    _EpicMesh mesh;
+    triangle_mesh_to_cgal(TriangleMesh(proxy_mesh), mesh);
+    if (mesh.num_faces() != proxy_mesh.indices.size() || !CGAL::is_closed(mesh))
+        throw Slic3r::RuntimeError("Shape-diameter segmentation requires a closed manifold mesh.");
+
+    using face_descriptor = boost::graph_traits<_EpicMesh>::face_descriptor;
+    using Facet_double_map = _EpicMesh::Property_map<face_descriptor, double>;
+    using Facet_int_map = _EpicMesh::Property_map<face_descriptor, std::size_t>;
+
+    Facet_double_map sdf_property_map = mesh.add_property_map<face_descriptor, double>("f:sdf").first;
+    Facet_int_map segment_property_map = mesh.add_property_map<face_descriptor, std::size_t>("f:sid").first;
+    CGAL::sdf_values(mesh, sdf_property_map, 2.0 / 3.0 * CGAL_PI, std::max(number_of_rays, size_t(1)), true);
+    CGAL::segmentation_from_sdf_values(mesh,
+                                       sdf_property_map,
+                                       segment_property_map,
+                                       std::max(segment_number, size_t(1)),
+                                       std::clamp(smoothing_alpha, 0., 1.));
+
+    using Primitive = CGAL::AABB_face_graph_triangle_primitive<_EpicMesh>;
+    using Aabb_traits = CGAL::AABB_traits<EpicKernel, Primitive>;
+    using Aabb_tree = CGAL::AABB_tree<Aabb_traits>;
+    Aabb_tree tree(mesh.faces().begin(), mesh.faces().end(), mesh);
+    tree.accelerate_distance_queries();
+
+    result.reserve(target_mesh.indices.size());
+    for (const Vec3i32& face : target_mesh.indices) {
+        const Vec3f center =
+            (target_mesh.vertices[face[0]] + target_mesh.vertices[face[1]] + target_mesh.vertices[face[2]]) / 3.f;
+        const EpicKernel::Point_3 query(center.x(), center.y(), center.z());
+        const face_descriptor closest_face = tree.closest_point_and_primitive(query).second;
+        result.push_back(segment_property_map[closest_face]);
+    }
+    return result;
 }
 
 void merge(std::vector<_EpicMesh>& srcs, _EpicMesh& dst)

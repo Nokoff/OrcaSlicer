@@ -10,13 +10,12 @@ namespace Slic3r::AutoPaint {
 
 struct SegmentationOptions
 {
-    // Desired number of independently coloured surface regions. Disconnected
-    // mesh components always receive their own region, even when there are more
-    // components than requested regions.
+    // Number of colours available to the allocator. The geometry decides how
+    // many natural surface regions are needed; colours may be reused.
     size_t target_regions = 2;
 
-    // 0 favors evenly distributed regions. 1 strongly prefers sharp geometric
-    // edges as boundaries between regions.
+    // 0 keeps only the strongest part boundaries. 1 preserves finer concave
+    // seams and modeled creases.
     float boundary_preference = 0.75f;
 };
 
@@ -28,12 +27,18 @@ struct SegmentationResult
     // The facet used to seed each region. Region numbering follows this vector.
     std::vector<size_t> region_seed_faces;
 
+    // Palette entry allocated to each region. Adjacent regions are assigned
+    // different entries where possible, and all available entries are balanced
+    // across the surface.
+    std::vector<size_t> region_palette;
+
     [[nodiscard]] size_t region_count() const { return region_seed_faces.size(); }
 };
 
-// Partitions a triangle mesh into connected, geometry-aware surface regions.
-// Sharp changes in face normals are expensive to cross, so the geodesic region
-// boundaries tend to follow modeled creases instead of cutting across them.
+// Partitions a triangle mesh into natural, geometry-aware surface regions.
+// Concave seams and sharp modeled creases separate parts, while uninterrupted
+// rounded surfaces remain together instead of being divided into arbitrary
+// geodesic blobs.
 SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const SegmentationOptions& options = {});
 
 } // namespace Slic3r::AutoPaint

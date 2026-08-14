@@ -66,6 +66,15 @@ bool does_self_intersect(const CGALMesh &mesh);
 
 //BBS
 std::vector<TriangleMesh> segment(const TriangleMesh& src, double smoothing_alpha = 0.5, int segment_number = 5);
+
+// Segment a manageable proxy mesh with the Shape Diameter Function, then
+// transfer its connected segment ids onto every facet of target_mesh using
+// closest-surface queries. Both meshes must describe the same surface.
+std::vector<size_t> segment_face_ids(const indexed_triangle_set& proxy_mesh,
+                                     const indexed_triangle_set& target_mesh,
+                                     double                      smoothing_alpha,
+                                     size_t                      segment_number,
+                                     size_t                      number_of_rays = 5);
 TriangleMesh merge(std::vector<TriangleMesh> meshes);
 
 bool does_bound_a_volume(const CGALMesh &mesh);

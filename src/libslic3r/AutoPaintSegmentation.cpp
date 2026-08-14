@@ -1,11 +1,14 @@
 #include "AutoPaintSegmentation.hpp"
+#include "MeshBoolean.hpp"
+#include "QuadricEdgeCollapse.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <queue>
+#include <numeric>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace Slic3r::AutoPaint {
@@ -13,24 +16,68 @@ namespace {
 
 struct FaceGeometry
 {
-    Vec3f center = Vec3f::Zero();
     Vec3f normal = Vec3f::UnitZ();
     float area   = 0.f;
 };
 
-struct Neighbor
+struct SurfaceEdge
 {
-    size_t face = 0;
-    float  cost = 0.f;
+    size_t first_face        = 0;
+    size_t second_face       = 0;
+    float  boundary_strength = 0.f;
 };
 
-struct QueueEntry
+struct OpenEdge
 {
-    float  distance = 0.f;
-    size_t face     = 0;
-    size_t region   = 0;
+    size_t face          = 0;
+    int    first_vertex  = 0;
+    int    second_vertex = 0;
+};
 
-    bool operator<(const QueueEntry& other) const { return distance > other.distance; }
+class DisjointSet
+{
+public:
+    explicit DisjointSet(const std::vector<FaceGeometry>& faces)
+        : m_parent(faces.size()), m_sizes(faces.size(), 1), m_areas(faces.size(), 0.)
+    {
+        std::iota(m_parent.begin(), m_parent.end(), size_t(0));
+        for (size_t face_idx = 0; face_idx < faces.size(); ++face_idx)
+            m_areas[face_idx] = faces[face_idx].area;
+    }
+
+    size_t find(size_t item)
+    {
+        size_t root = item;
+        while (m_parent[root] != root)
+            root = m_parent[root];
+        while (m_parent[item] != item) {
+            const size_t parent = m_parent[item];
+            m_parent[item]      = root;
+            item                = parent;
+        }
+        return root;
+    }
+
+    bool unite(size_t first, size_t second)
+    {
+        first  = find(first);
+        second = find(second);
+        if (first == second)
+            return false;
+        if (m_sizes[first] < m_sizes[second] || (m_sizes[first] == m_sizes[second] && first > second))
+            std::swap(first, second);
+        m_parent[second] = first;
+        m_sizes[first] += m_sizes[second];
+        m_areas[first] += m_areas[second];
+        return true;
+    }
+
+    [[nodiscard]] double area(size_t item) { return m_areas[find(item)]; }
+
+private:
+    std::vector<size_t> m_parent;
+    std::vector<size_t> m_sizes;
+    std::vector<double> m_areas;
 };
 
 uint64_t edge_key(int first, int second)
@@ -53,8 +100,7 @@ std::vector<FaceGeometry> calculate_face_geometry(const indexed_triangle_set& me
         const float  twice_area = cross.norm();
 
         FaceGeometry geometry;
-        geometry.center = (a + b + c) / 3.f;
-        geometry.area   = 0.5f * twice_area;
+        geometry.area = 0.5f * twice_area;
         if (twice_area > std::numeric_limits<float>::epsilon())
             geometry.normal = cross / twice_area;
         result.emplace_back(geometry);
@@ -63,17 +109,12 @@ std::vector<FaceGeometry> calculate_face_geometry(const indexed_triangle_set& me
     return result;
 }
 
-std::vector<std::vector<Neighbor>> build_face_graph(const indexed_triangle_set&      mesh,
-                                                    const std::vector<FaceGeometry>& faces,
-                                                    float                            boundary_preference)
+std::vector<SurfaceEdge> build_surface_edges(const indexed_triangle_set& mesh, const std::vector<FaceGeometry>& faces)
 {
-    std::vector<std::vector<Neighbor>>   graph(mesh.indices.size());
-    std::unordered_map<uint64_t, size_t> first_face_by_edge;
+    std::vector<SurfaceEdge>               edges;
+    std::unordered_map<uint64_t, OpenEdge> first_face_by_edge;
+    edges.reserve(mesh.indices.size() * 3 / 2);
     first_face_by_edge.reserve(mesh.indices.size() * 3);
-
-    const float     preference      = std::clamp(boundary_preference, 0.f, 1.f);
-    const float     crease_gain     = 2.f + 48.f * preference * preference;
-    constexpr float reference_angle = float(M_PI) / 4.f;
 
     for (size_t face_idx = 0; face_idx < mesh.indices.size(); ++face_idx) {
         const Vec3i32& face = mesh.indices[face_idx];
@@ -81,96 +122,99 @@ std::vector<std::vector<Neighbor>> build_face_graph(const indexed_triangle_set& 
             const int      first_vertex    = face[edge_idx];
             const int      second_vertex   = face[(edge_idx + 1) % 3];
             const uint64_t key             = edge_key(first_vertex, second_vertex);
-            const auto [edge_it, inserted] = first_face_by_edge.emplace(key, face_idx);
-            if (inserted || edge_it->second == face_idx)
+            const auto [edge_it, inserted] = first_face_by_edge.emplace(key, OpenEdge{face_idx, first_vertex, second_vertex});
+            if (inserted || edge_it->second.face == face_idx)
                 continue;
 
             // Non-manifold edges are connected to their first incident facet.
-            // This keeps every incident sheet reachable without making the
-            // topology builder disproportionately expensive.
-            const size_t other_face  = edge_it->second;
-            const float  normal_dot  = std::clamp(faces[face_idx].normal.dot(faces[other_face].normal), -1.f, 1.f);
-            const float  angle       = std::acos(normal_dot);
-            const float  crease      = angle / reference_angle;
-            const float  base_length = std::max((faces[face_idx].center - faces[other_face].center).norm(), 1e-6f);
-            const float  cost        = base_length * (1.f + crease_gain * crease * crease);
+            const OpenEdge& open_edge   = edge_it->second;
+            const Vec3f     edge_vector = mesh.vertices[open_edge.second_vertex] - mesh.vertices[open_edge.first_vertex];
+            const float     edge_length = edge_vector.norm();
+            Vec3f           edge_axis   = Vec3f::UnitX();
+            if (edge_length > 1e-8f)
+                edge_axis = edge_vector / edge_length;
+            const Vec3f& first_normal  = faces[open_edge.face].normal;
+            const Vec3f& second_normal = faces[face_idx].normal;
+            const float  normal_dot    = std::clamp(first_normal.dot(second_normal), -1.f, 1.f);
+            const float  normal_sine   = edge_axis.dot(first_normal.cross(second_normal));
+            const float  signed_angle  = std::atan2(normal_sine, normal_dot) * 180.f / float(M_PI);
 
-            graph[face_idx].push_back({other_face, cost});
-            graph[other_face].push_back({face_idx, cost});
+            // Smooth convex curvature belongs to one rounded part. Concave
+            // curvature usually marks an attachment seam, while a convex fold
+            // is only a boundary when it is visibly sharp.
+            const float concave_strength    = std::max(-signed_angle, 0.f);
+            const float sharp_fold_strength = std::max(std::abs(signed_angle) - 22.f, 0.f);
+            edges.push_back({open_edge.face, face_idx, std::max(concave_strength, sharp_fold_strength)});
         }
     }
 
-    return graph;
+    return edges;
 }
 
-std::vector<std::vector<size_t>> connected_components(const std::vector<std::vector<Neighbor>>& graph)
+void allocate_palette(const std::vector<SurfaceEdge>&  edges,
+                      const std::vector<FaceGeometry>& faces,
+                      size_t                           palette_size,
+                      SegmentationResult&              result)
 {
-    std::vector<std::vector<size_t>> components;
-    std::vector<bool>                visited(graph.size(), false);
-    std::vector<size_t>              stack;
+    const size_t region_count = result.region_count();
+    if (region_count == 0)
+        return;
 
-    for (size_t start = 0; start < graph.size(); ++start) {
-        if (visited[start])
-            continue;
-
-        components.emplace_back();
-        stack.push_back(start);
-        visited[start] = true;
-        while (!stack.empty()) {
-            const size_t face = stack.back();
-            stack.pop_back();
-            components.back().push_back(face);
-            for (const Neighbor& neighbor : graph[face]) {
-                if (!visited[neighbor.face]) {
-                    visited[neighbor.face] = true;
-                    stack.push_back(neighbor.face);
-                }
-            }
+    palette_size = std::max(palette_size, size_t(1));
+    std::vector<double>                     region_areas(region_count, 0.);
+    std::vector<std::unordered_set<size_t>> neighbors(region_count);
+    for (size_t face_idx = 0; face_idx < result.face_regions.size(); ++face_idx)
+        region_areas[result.face_regions[face_idx]] += faces[face_idx].area;
+    for (const SurfaceEdge& edge : edges) {
+        const size_t first_region  = result.face_regions[edge.first_face];
+        const size_t second_region = result.face_regions[edge.second_face];
+        if (first_region != second_region) {
+            neighbors[first_region].insert(second_region);
+            neighbors[second_region].insert(first_region);
         }
     }
 
-    return components;
-}
-
-size_t component_seed(const std::vector<size_t>& component, const std::vector<FaceGeometry>& faces)
-{
-    // Starting at the lowest substantial facet makes the first palette entry a
-    // useful default for bases, shoes, and other grounded model features.
-    return *std::min_element(component.begin(), component.end(), [&faces](size_t lhs, size_t rhs) {
-        const float z_delta = faces[lhs].center.z() - faces[rhs].center.z();
-        if (std::abs(z_delta) > 1e-6f)
-            return z_delta < 0.f;
-        if (std::abs(faces[lhs].area - faces[rhs].area) > 1e-6f)
-            return faces[lhs].area > faces[rhs].area;
-        return lhs < rhs;
-    });
-}
-
-void grow_region(size_t                                    seed,
-                 size_t                                    region,
-                 const std::vector<std::vector<Neighbor>>& graph,
-                 std::vector<float>&                       distances,
-                 std::vector<size_t>&                      face_regions)
-{
-    std::priority_queue<QueueEntry> queue;
-    distances[seed]    = 0.f;
-    face_regions[seed] = region;
-    queue.push({0.f, seed, region});
-
-    while (!queue.empty()) {
-        const QueueEntry current = queue.top();
-        queue.pop();
-        if (current.distance != distances[current.face] || current.region != face_regions[current.face])
-            continue;
-
-        for (const Neighbor& neighbor : graph[current.face]) {
-            const float candidate = current.distance + neighbor.cost;
-            if (candidate < distances[neighbor.face]) {
-                distances[neighbor.face]    = candidate;
-                face_regions[neighbor.face] = current.region;
-                queue.push({candidate, neighbor.face, current.region});
+    constexpr size_t unassigned = std::numeric_limits<size_t>::max();
+    result.region_palette.assign(region_count, unassigned);
+    std::vector<double> palette_areas(palette_size, 0.);
+    for (size_t assigned_count = 0; assigned_count < region_count; ++assigned_count) {
+        size_t region          = unassigned;
+        size_t best_saturation = 0;
+        size_t best_degree     = 0;
+        for (size_t candidate = 0; candidate < region_count; ++candidate) {
+            if (result.region_palette[candidate] != unassigned)
+                continue;
+            std::unordered_set<size_t> adjacent_palettes;
+            for (const size_t neighbor : neighbors[candidate])
+                if (result.region_palette[neighbor] != unassigned)
+                    adjacent_palettes.insert(result.region_palette[neighbor]);
+            const size_t saturation = adjacent_palettes.size();
+            const size_t degree     = neighbors[candidate].size();
+            if (region == unassigned || saturation > best_saturation || (saturation == best_saturation && degree > best_degree) ||
+                (saturation == best_saturation && degree == best_degree && region_areas[candidate] > region_areas[region]) ||
+                (saturation == best_saturation && degree == best_degree && region_areas[candidate] == region_areas[region] &&
+                 candidate < region)) {
+                region          = candidate;
+                best_saturation = saturation;
+                best_degree     = degree;
             }
         }
+
+        size_t best_palette   = 0;
+        size_t best_conflicts = std::numeric_limits<size_t>::max();
+        for (size_t palette = 0; palette < palette_size; ++palette) {
+            size_t conflicts = 0;
+            for (const size_t neighbor : neighbors[region])
+                if (result.region_palette[neighbor] == palette)
+                    ++conflicts;
+            if (conflicts < best_conflicts || (conflicts == best_conflicts && palette_areas[palette] < palette_areas[best_palette]) ||
+                (conflicts == best_conflicts && palette_areas[palette] == palette_areas[best_palette] && palette < best_palette)) {
+                best_palette   = palette;
+                best_conflicts = conflicts;
+            }
+        }
+        result.region_palette[region] = best_palette;
+        palette_areas[best_palette] += region_areas[region];
     }
 }
 
@@ -182,47 +226,150 @@ SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const S
     if (mesh.indices.empty() || mesh.vertices.empty())
         return result;
 
-    const std::vector<FaceGeometry>          faces      = calculate_face_geometry(mesh);
-    const std::vector<std::vector<Neighbor>> graph      = build_face_graph(mesh, faces, options.boundary_preference);
-    std::vector<std::vector<size_t>>         components = connected_components(graph);
-    std::sort(components.begin(), components.end(), [&faces](const std::vector<size_t>& lhs, const std::vector<size_t>& rhs) {
-        const size_t lhs_seed = component_seed(lhs, faces);
-        const size_t rhs_seed = component_seed(rhs, faces);
-        const float  z_delta  = faces[lhs_seed].center.z() - faces[rhs_seed].center.z();
-        if (std::abs(z_delta) > 1e-6f)
-            return z_delta < 0.f;
-        if (lhs.size() != rhs.size())
-            return lhs.size() > rhs.size();
-        return lhs_seed < rhs_seed;
+    const std::vector<FaceGeometry> faces = calculate_face_geometry(mesh);
+    std::vector<SurfaceEdge>        edges = build_surface_edges(mesh, faces);
+    std::sort(edges.begin(), edges.end(), [](const SurfaceEdge& lhs, const SurfaceEdge& rhs) {
+        if (lhs.boundary_strength != rhs.boundary_strength)
+            return lhs.boundary_strength < rhs.boundary_strength;
+        if (lhs.first_face != rhs.first_face)
+            return lhs.first_face < rhs.first_face;
+        return lhs.second_face < rhs.second_face;
     });
 
-    const size_t       requested_regions = std::clamp(options.target_regions, size_t(1), mesh.indices.size());
-    const size_t       target_regions    = std::max(requested_regions, components.size());
-    constexpr size_t   unassigned_region = std::numeric_limits<size_t>::max();
-    std::vector<float> distances(mesh.indices.size(), std::numeric_limits<float>::infinity());
-    result.face_regions.assign(mesh.indices.size(), unassigned_region);
-    result.region_seed_faces.reserve(target_regions);
+    const float  preference          = std::clamp(options.boundary_preference, 0.f, 1.f);
+    const float  boundary_threshold  = 18.f - 14.f * preference;
+    const size_t palette_size        = std::clamp(options.target_regions, size_t(1), mesh.indices.size());
+    const size_t maximum_regions     = std::min(mesh.indices.size(), std::max(palette_size * 4, palette_size + 4));
+    const double total_area          = std::accumulate(faces.begin(), faces.end(), 0.,
+                                                       [](double area, const FaceGeometry& face) { return area + face.area; });
+    double       minimum_region_area = total_area / std::max<double>(maximum_regions * 250., 1.);
 
-    // Every disconnected component needs a seed because no surface path can
-    // legitimately carry a colour into it from another component.
-    for (const std::vector<size_t>& component : components) {
-        const size_t seed   = component_seed(component, faces);
-        const size_t region = result.region_seed_faces.size();
-        result.region_seed_faces.push_back(seed);
-        grow_region(seed, region, graph, distances, result.face_regions);
+    std::vector<size_t> shape_labels;
+    if (mesh.indices.size() >= 2000) {
+        try {
+            indexed_triangle_set proxy_mesh       = mesh;
+            constexpr size_t     proxy_face_limit = 20000;
+            if (proxy_mesh.indices.size() > proxy_face_limit)
+                its_quadric_edge_collapse(proxy_mesh, uint32_t(proxy_face_limit));
+            const double smoothing = 0.8 - 0.62 * preference;
+            shape_labels           = MeshBoolean::cgal::segment_face_ids(proxy_mesh, mesh, smoothing, maximum_regions, 25);
+        } catch (...) {
+            // Open, non-manifold, or otherwise unsuitable meshes still receive
+            // the fast local crease-based fallback below.
+            shape_labels.clear();
+        }
     }
 
-    // Incremental farthest-point sampling spreads the remaining seeds over the
-    // surface. Each Dijkstra update only changes facets made closer by the new
-    // seed, and the crease-weighted costs keep those updates inside likely
-    // modeled boundaries whenever possible.
-    while (result.region_seed_faces.size() < target_regions) {
-        const size_t next_seed = static_cast<size_t>(std::distance(distances.begin(), std::max_element(distances.begin(), distances.end())));
-        const size_t region = result.region_seed_faces.size();
-        result.region_seed_faces.push_back(next_seed);
-        grow_region(next_seed, region, graph, distances, result.face_regions);
+    DisjointSet sets(faces);
+    size_t      component_count  = mesh.indices.size();
+    const bool  has_shape_labels = shape_labels.size() == mesh.indices.size();
+    if (has_shape_labels) {
+        minimum_region_area = total_area / std::max<double>(maximum_regions * 100., 1.);
+        for (const SurfaceEdge& edge : edges)
+            if (shape_labels[edge.first_face] == shape_labels[edge.second_face] && sets.unite(edge.first_face, edge.second_face))
+                --component_count;
+    } else {
+        for (const SurfaceEdge& edge : edges) {
+            if (edge.boundary_strength > boundary_threshold)
+                break;
+            if (sets.unite(edge.first_face, edge.second_face))
+                --component_count;
+        }
     }
 
+    // Remove specks caused by tessellation noise before imposing the generous
+    // upper limit on useful natural parts.
+    for (size_t pass = 0; pass < 8; ++pass) {
+        size_t merged_count = 0;
+        for (const SurfaceEdge& edge : edges) {
+            const size_t first_root  = sets.find(edge.first_face);
+            const size_t second_root = sets.find(edge.second_face);
+            if (first_root != second_root &&
+                (sets.area(first_root) < minimum_region_area || sets.area(second_root) < minimum_region_area) &&
+                sets.unite(first_root, second_root)) {
+                --component_count;
+                ++merged_count;
+            }
+        }
+        if (merged_count == 0)
+            break;
+    }
+
+    if (has_shape_labels) {
+        struct InterfaceStats
+        {
+            size_t first_root   = 0;
+            size_t second_root  = 0;
+            double strength_sum = 0.;
+            size_t edge_count   = 0;
+
+            [[nodiscard]] double mean_strength() const { return strength_sum / double(edge_count); }
+        };
+
+        // Projection may leave little islands from a thickness band inside a
+        // much larger smooth part (most visibly on rounded shoes). Absorb only
+        // those weak, highly unbalanced interfaces; a genuine small feature is
+        // retained when its surrounding seam is concave or sharply folded.
+        for (size_t pass = 0; pass < 4; ++pass) {
+            std::unordered_map<uint64_t, InterfaceStats> interfaces_by_roots;
+            interfaces_by_roots.reserve(component_count * 3);
+            for (const SurfaceEdge& edge : edges) {
+                size_t first_root  = sets.find(edge.first_face);
+                size_t second_root = sets.find(edge.second_face);
+                if (first_root == second_root)
+                    continue;
+                if (first_root > second_root)
+                    std::swap(first_root, second_root);
+                const uint64_t key            = (static_cast<uint64_t>(first_root) << 32) | static_cast<uint32_t>(second_root);
+                auto [interface_it, inserted] = interfaces_by_roots.emplace(key, InterfaceStats{first_root, second_root, 0., 0});
+                interface_it->second.strength_sum += edge.boundary_strength;
+                ++interface_it->second.edge_count;
+            }
+
+            std::vector<InterfaceStats> interfaces;
+            interfaces.reserve(interfaces_by_roots.size());
+            for (const auto& [key, stats] : interfaces_by_roots)
+                interfaces.push_back(stats);
+            std::sort(interfaces.begin(), interfaces.end(),
+                      [](const InterfaceStats& lhs, const InterfaceStats& rhs) { return lhs.mean_strength() < rhs.mean_strength(); });
+
+            size_t merged_count = 0;
+            for (const InterfaceStats& interface : interfaces) {
+                const size_t first_root  = sets.find(interface.first_root);
+                const size_t second_root = sets.find(interface.second_root);
+                if (first_root == second_root || interface.mean_strength() > boundary_threshold)
+                    continue;
+                const double first_area  = sets.area(first_root);
+                const double second_area = sets.area(second_root);
+                if (std::min(first_area, second_area) < 0.2 * std::max(first_area, second_area) && sets.unite(first_root, second_root)) {
+                    --component_count;
+                    ++merged_count;
+                }
+            }
+            if (merged_count == 0)
+                break;
+        }
+    }
+
+    if (!has_shape_labels && component_count > maximum_regions) {
+        for (const SurfaceEdge& edge : edges) {
+            if (sets.unite(edge.first_face, edge.second_face) && --component_count <= maximum_regions)
+                break;
+        }
+    }
+
+    std::unordered_map<size_t, size_t> region_by_root;
+    region_by_root.reserve(component_count);
+    result.face_regions.resize(mesh.indices.size());
+    for (size_t face_idx = 0; face_idx < mesh.indices.size(); ++face_idx) {
+        const size_t root                = sets.find(face_idx);
+        const auto [region_it, inserted] = region_by_root.emplace(root, region_by_root.size());
+        if (inserted)
+            result.region_seed_faces.push_back(face_idx);
+        result.face_regions[face_idx] = region_it->second;
+    }
+
+    allocate_palette(edges, faces, palette_size, result);
     return result;
 }
 
