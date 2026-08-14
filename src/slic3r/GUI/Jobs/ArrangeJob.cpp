@@ -715,6 +715,11 @@ void ArrangeJob::finalize(bool canceled, std::exception_ptr &eptr) {
     }
     m_plater->get_notification_manager()->close_notification_of_type(NotificationType::ArrangeOngoing);
 
+    // Plate recycling may destroy the Print currently referenced by the canvas
+    // and background process. Detach it before rebuilding, then bind the new
+    // current plate below before any scene reload occurs.
+    m_plater->clear_slicing_context();
+
     //BBS: reload all objects due to arrange
     if (only_on_partplate) {
         plate_list.rebuild_plates_after_arrangement(!only_on_partplate, true, current_plate_index);

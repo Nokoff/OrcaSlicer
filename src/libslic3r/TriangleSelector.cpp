@@ -1,5 +1,6 @@
 #include "TriangleSelector.hpp"
 #include "Model.hpp"
+#include "AABBTreeIndirect.hpp"
 
 #include <boost/container/small_vector.hpp>
 #include <boost/log/trivial.hpp>
@@ -168,25 +169,64 @@ void TriangleSelector::Triangle::set_division(int sides_to_split, int special_si
     this->special_side_idx = char(special_side_idx);
 }
 
-inline bool is_point_inside_triangle(const Vec3f &pt, const Vec3f &p1, const Vec3f &p2, const Vec3f &p3)
+// Pre-computed barycentric resolver based on Real-Time Collision Detection,
+// Ericson, Chapter 3.4.
+struct Barycentric
 {
-    // Real-time collision detection, Ericson, Chapter 3.4
-    auto barycentric = [&pt, &p1, &p2, &p3]() -> Vec3f {
-        std::array<Vec3f, 3> v     = {p2 - p1, p3 - p1, pt - p1};
-        float                d00   = v[0].dot(v[0]);
-        float                d01   = v[0].dot(v[1]);
-        float                d11   = v[1].dot(v[1]);
-        float                d20   = v[2].dot(v[0]);
-        float                d21   = v[2].dot(v[1]);
-        float                denom = d00 * d11 - d01 * d01;
+public:
+    Barycentric(const Vec3f& a, const Vec3f& b, const Vec3f& c) : a_(a)
+    {
+        const Vec3f v0 = b - a;
+        const Vec3f v1 = c - a;
+        const float d00 = v0.dot(v0);
+        const float d01 = v0.dot(v1);
+        const float d11 = v1.dot(v1);
+        const float inv_denom = 1.0f / (d00 * d11 - d01 * d01);
 
-        Vec3f barycentric_cords(1.f, (d11 * d20 - d01 * d21) / denom, (d00 * d21 - d01 * d20) / denom);
-        barycentric_cords.x() = barycentric_cords.x() - barycentric_cords.y() - barycentric_cords.z();
-        return barycentric_cords;
-    };
+        x1_ = (d11 * v0 - d01 * v1) * inv_denom;
+        x2_ = (d00 * v1 - d01 * v0) * inv_denom;
+    }
 
-    Vec3f barycentric_cords = barycentric();
-    return std::all_of(begin(barycentric_cords), end(barycentric_cords), [](float cord) { return 0.f <= cord && cord <= 1.0; });
+    Vec3f calc(const Vec3f& point) const
+    {
+        const Vec3f v2 = point - a_;
+        const float v = v2.dot(x1_);
+        const float w = v2.dot(x2_);
+        return {1.f - v - w, v, w};
+    }
+
+    bool is_point_inside_triangle(const Vec3f& point, float tolerance = 0.f) const
+    {
+        const Vec3f coordinates = calc(point);
+        return std::all_of(begin(coordinates), end(coordinates), [tolerance](float coordinate) {
+            return -tolerance <= coordinate && coordinate <= 1.f + tolerance;
+        });
+    }
+
+    static Vec3f calc(const Vec3f& point, const Vec3f& p1, const Vec3f& p2, const Vec3f& p3)
+    {
+        const std::array<Vec3f, 3> vectors = {p2 - p1, p3 - p1, point - p1};
+        const float d00 = vectors[0].dot(vectors[0]);
+        const float d01 = vectors[0].dot(vectors[1]);
+        const float d11 = vectors[1].dot(vectors[1]);
+        const float d20 = vectors[2].dot(vectors[0]);
+        const float d21 = vectors[2].dot(vectors[1]);
+        const float denominator = d00 * d11 - d01 * d01;
+        const float v = (d11 * d20 - d01 * d21) / denominator;
+        const float w = (d00 * d21 - d01 * d20) / denominator;
+        return {1.f - v - w, v, w};
+    }
+
+private:
+    Vec3f a_;
+    Vec3f x1_;
+    Vec3f x2_;
+};
+
+static bool is_point_inside_triangle(const Vec3f &point, const Vec3f &p1, const Vec3f &p2, const Vec3f &p3)
+{
+    const Vec3f coordinates = Barycentric::calc(point, p1, p2, p3);
+    return std::all_of(begin(coordinates), end(coordinates), [](float coordinate) { return 0.f <= coordinate && coordinate <= 1.f; });
 }
 
 int TriangleSelector::select_unsplit_triangle(const Vec3f &hit, int facet_idx, const Vec3i32 &neighbors) const
@@ -958,7 +998,7 @@ bool TriangleSelector::select_triangle_recursive(int facet_idx, const Vec3i32 &n
 
         if (triangle_splitting)
             split_triangle(facet_idx, neighbors);
-        else if (!m_triangles[facet_idx].is_split())
+        if (!m_triangles[facet_idx].is_split())
             m_triangles[facet_idx].set_state(type);
         tr = &m_triangles[facet_idx]; // might have been invalidated by split_triangle().
 
@@ -2269,6 +2309,242 @@ bool TriangleSelector::Capsule2D::is_edge_inside_cursor(const Triangle &tr, cons
     }
 
     return false;
+}
+
+static bool segments_intersect_projection(const Vec3f& p1, const Vec3f& p2, const Vec3f& p3, const Vec3f& p4,
+                                          const std::pair<int, int>& projection, bool include_endpoints = true)
+{
+    auto cross_2d = [](float ax, float ay, float bx, float by) { return ax * by - ay * bx; };
+    const auto [u_axis, v_axis] = projection;
+    const float u1 = p1(u_axis), v1 = p1(v_axis);
+    const float u2 = p2(u_axis), v2 = p2(v_axis);
+    const float u3 = p3(u_axis), v3 = p3(v_axis);
+    const float u4 = p4(u_axis), v4 = p4(v_axis);
+    const float ru = u2 - u1, rv = v2 - v1;
+    const float su = u4 - u3, sv = v4 - v3;
+    const float denominator = cross_2d(ru, rv, su, sv);
+    if (std::abs(denominator) < 1e-10f)
+        return false;
+
+    const float dpu = u3 - u1, dpv = v3 - v1;
+    const float t1 = cross_2d(dpu, dpv, su, sv) / denominator;
+    const float t2 = cross_2d(dpu, dpv, ru, rv) / denominator;
+    if (include_endpoints)
+        return 0.f <= t1 && t1 <= 1.f && 0.f <= t2 && t2 <= 1.f;
+
+    constexpr float endpoint_tolerance = 1e-5f;
+    return endpoint_tolerance < t1 && t1 < 1.f - endpoint_tolerance && endpoint_tolerance < t2 && t2 < 1.f - endpoint_tolerance;
+}
+
+// A cursor shaped like one painted source triangle. It projects nearby target
+// edges onto the source triangle so partial facet painting can be recreated.
+class TriangleCursor : public TriangleSelector::SinglePointCursor
+{
+public:
+    TriangleCursor() = delete;
+    TriangleCursor(const Vec3f& center, const Vec3f& source, float radius, const std::array<const Vec3f, 3>& vertices)
+        : TriangleSelector::SinglePointCursor(center, source, radius, Transform3d::Identity(), TriangleSelector::ClippingPlane())
+        , barycentric_(vertices[0], vertices[1], vertices[2])
+    {}
+
+    static std::unique_ptr<Cursor> build_cursor(const TriangleSelector& selector, const TriangleSelector::Triangle& triangle)
+    {
+        const Vec3f& p0 = selector.m_vertices[triangle.verts_idxs[0]].v;
+        const Vec3f& p1 = selector.m_vertices[triangle.verts_idxs[1]].v;
+        const Vec3f& p2 = selector.m_vertices[triangle.verts_idxs[2]].v;
+        const Vec3f center = (p0 + p1 + p2) / 3.f;
+        const Vec3f& normal = selector.m_face_normals[triangle.source_triangle];
+        const float radius = std::max(std::min({point_to_line_distance(center, p0, p1), point_to_line_distance(center, p0, p2),
+                                                point_to_line_distance(center, p1, p2)}),
+                                      0.1f);
+        return std::make_unique<TriangleCursor>(center, center + normal, radius, std::array<const Vec3f, 3>{p0, p1, p2});
+    }
+
+    bool is_mesh_point_inside(const Vec3f& point) const override { return barycentric_.is_point_inside_triangle(point, tolerance); }
+
+    bool is_edge_inside_cursor(const TriangleSelector::Triangle& triangle,
+                               const std::vector<TriangleSelector::Vertex>& vertices) const override
+    {
+        std::array<Vec3f, 3> projected_points;
+        std::array<float, 3> distances;
+        for (int i = 0; i < 3; ++i) {
+            Vec3f point = vertices[triangle.verts_idxs[i]].v;
+            if (!uniform_scaling)
+                point = trafo * point;
+
+            const Vec3f difference = point - center;
+            distances[i] = difference.dot(dir);
+            projected_points[i] = point - distances[i] * dir;
+        }
+
+        for (int side = 0; side < 3; ++side) {
+            const int index_a = side;
+            const int index_b = side < 2 ? side + 1 : 0;
+            const float distance_a = distances[index_a];
+            const float distance_b = distances[index_b];
+            if ((distance_a > tolerance && distance_b > tolerance) || (distance_a < -tolerance && distance_b < -tolerance))
+                continue;
+
+            Vec3f point_a = projected_points[index_a];
+            Vec3f point_b = projected_points[index_b];
+            if (std::abs(distance_a) > tolerance)
+                point_a = (tolerance - distance_b) / (distance_a - distance_b) *
+                              (projected_points[index_a] - projected_points[index_b]) +
+                          projected_points[index_b];
+            if (std::abs(distance_b) > tolerance)
+                point_b = (tolerance - distance_a) / (distance_b - distance_a) *
+                              (projected_points[index_b] - projected_points[index_a]) +
+                          projected_points[index_a];
+
+            if (barycentric_.is_point_inside_triangle(point_a, tolerance) || barycentric_.is_point_inside_triangle(point_b, tolerance))
+                return true;
+
+            const Vec3f barycentric_a = barycentric_.calc(point_a);
+            const Vec3f barycentric_b = barycentric_.calc(point_b);
+            const Vec3f corner_0{1.f, 0.f, 0.f};
+            const Vec3f corner_1{0.f, 1.f, 0.f};
+            const Vec3f corner_2{0.f, 0.f, 1.f};
+            constexpr std::pair<int, int> projection{0, 1};
+            if (segments_intersect_projection(barycentric_a, barycentric_b, corner_0, corner_1, projection) ||
+                segments_intersect_projection(barycentric_a, barycentric_b, corner_0, corner_2, projection) ||
+                segments_intersect_projection(barycentric_a, barycentric_b, corner_1, corner_2, projection))
+                return true;
+        }
+
+        return false;
+    }
+
+    bool is_facet_visible(int facet_idx, const std::vector<Vec3f>& face_normals) const override
+    {
+        return normals_match(face_normals[facet_idx], dir);
+    }
+
+    static bool normals_match(const Vec3f& facet_normal, const Vec3f& camera_direction)
+    {
+        const float cosine = -facet_normal.dot(camera_direction);
+        return std::clamp(cosine, 0.f, 1.f) >= facet_angle_limit;
+    }
+
+    static constexpr float tolerance = 0.01f;
+
+private:
+    static float point_to_line_distance(const Vec3f& point, const Vec3f& line_a, const Vec3f& line_b)
+    {
+        return Eigen::ParametrizedLine<float, 3>::Through(line_a, line_b).distance(point);
+    }
+
+    const Barycentric barycentric_;
+    static const double facet_angle_limit;
+};
+
+const double TriangleCursor::facet_angle_limit = std::cos(Geometry::deg2rad(5.0));
+
+TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
+    const indexed_triangle_set& source_its,
+    const TriangleSplittingData& source_painting,
+    const indexed_triangle_set& target_its,
+    const Transform3d& target_transform,
+    const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting)
+{
+    TriangleSplittingData result;
+    if (source_painting.bitstream.empty())
+        return result;
+
+    TriangleMesh source_mesh(source_its);
+    TriangleSelector source_selector(source_mesh);
+    source_selector.deserialize(source_painting, false);
+
+    std::vector<std::reference_wrapper<const Triangle>> painted_triangles;
+    painted_triangles.reserve(source_selector.m_triangles.size());
+    for (const Triangle& triangle : source_selector.m_triangles) {
+        if (triangle.valid() && !triangle.is_split() && triangle.get_state() != EnforcerBlockerType::NONE)
+            painted_triangles.emplace_back(std::cref(triangle));
+    }
+    if (painted_triangles.empty())
+        return result;
+
+    TriangleMesh target_mesh(target_its);
+    target_mesh.transform(target_transform);
+    const AABBTreeIndirect::Tree3f target_tree =
+        AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(target_mesh.its.vertices, target_mesh.its.indices);
+
+    auto triangles_overlap = [](const Vec3f& p0, const Vec3f& p1, const Vec3f& p2, const Vec3f& t0, const Vec3f& t1,
+                                const Vec3f& t2) {
+        auto is_strictly_inside = [](const Vec3f& point, const Vec3f& triangle_0, const Vec3f& triangle_1, const Vec3f& triangle_2) {
+            constexpr float edge_tolerance = 1e-5f;
+            const Vec3f coordinates = Barycentric::calc(point, triangle_0, triangle_1, triangle_2);
+            return std::all_of(begin(coordinates), end(coordinates), [edge_tolerance](float coordinate) {
+                return edge_tolerance < coordinate && coordinate < 1.f - edge_tolerance;
+            });
+        };
+
+        if (is_strictly_inside(t0, p0, p1, p2) || is_strictly_inside(t1, p0, p1, p2) || is_strictly_inside(t2, p0, p1, p2) ||
+            is_strictly_inside(p0, t0, t1, t2) || is_strictly_inside(p1, t0, t1, t2) || is_strictly_inside(p2, t0, t1, t2))
+            return true;
+
+        const Vec3f combined_normal = ((p1 - p0).cross(p2 - p0)).cwiseAbs() + ((t1 - t0).cross(t2 - t0)).cwiseAbs();
+        const int dominant_axis = combined_normal.x() >= combined_normal.y() && combined_normal.x() >= combined_normal.z() ? 0 :
+                                  combined_normal.y() >= combined_normal.z() ? 1 : 2;
+        const std::pair<int, int> projection{(dominant_axis + 1) % 3, (dominant_axis + 2) % 3};
+        const std::array<std::pair<Vec3f, Vec3f>, 3> source_edges{{{p0, p1}, {p1, p2}, {p2, p0}}};
+        const std::array<std::pair<Vec3f, Vec3f>, 3> target_edges{{{t0, t1}, {t1, t2}, {t2, t0}}};
+        for (const auto& source_edge : source_edges)
+            for (const auto& target_edge : target_edges)
+                if (segments_intersect_projection(source_edge.first, source_edge.second, target_edge.first, target_edge.second, projection,
+                                                  false))
+                    return true;
+        return false;
+    };
+
+    TriangleSelector target_selector(target_mesh);
+    if (existing_painting)
+        target_selector.deserialize(existing_painting->get(), false);
+
+    for (const std::reference_wrapper<const Triangle>& triangle_reference : painted_triangles) {
+        const Triangle& triangle = triangle_reference.get();
+        const Vec3f& p0 = source_selector.m_vertices[triangle.verts_idxs[0]].v;
+        const Vec3f& p1 = source_selector.m_vertices[triangle.verts_idxs[1]].v;
+        const Vec3f& p2 = source_selector.m_vertices[triangle.verts_idxs[2]].v;
+        const Barycentric source_coordinates(p0, p1, p2);
+
+        Eigen::AlignedBox3f paint_bounds;
+        paint_bounds.extend(p0);
+        paint_bounds.extend(p1);
+        paint_bounds.extend(p2);
+        paint_bounds.min() -= Eigen::Vector3f::Constant(TriangleCursor::tolerance);
+        paint_bounds.max() += Eigen::Vector3f::Constant(TriangleCursor::tolerance);
+
+        AABBTreeIndirect::traverse(target_tree, AABBTreeIndirect::intersecting(paint_bounds),
+                                   [&](const AABBTreeIndirect::Tree3f::Node& node) {
+            const size_t face_index = node.idx;
+            if (face_index >= target_mesh.its.indices.size())
+                return true;
+
+            const Vec3f& source_normal = source_selector.m_face_normals[triangle.source_triangle];
+            const Vec3f& target_normal = target_selector.m_face_normals[face_index];
+            const Vec3i32& face = target_mesh.its.indices[face_index];
+            const Vec3f& t0 = target_mesh.its.vertices[face(0)];
+            const Vec3f& t1 = target_mesh.its.vertices[face(1)];
+            const Vec3f& t2 = target_mesh.its.vertices[face(2)];
+
+            if (TriangleCursor::normals_match(target_normal, -source_normal)) {
+                // Planar cutting commonly produces faces that are exact subsets of
+                // a source face. Preserve those directly and avoid needlessly
+                // subdividing a large target triangle along coincident edges.
+                if (source_coordinates.is_point_inside_triangle(t0, TriangleCursor::tolerance) &&
+                    source_coordinates.is_point_inside_triangle(t1, TriangleCursor::tolerance) &&
+                    source_coordinates.is_point_inside_triangle(t2, TriangleCursor::tolerance)) {
+                    target_selector.set_facet(static_cast<int>(face_index), triangle.get_state());
+                } else if (triangles_overlap(p0, p1, p2, t0, t1, t2)) {
+                    target_selector.select_patch(static_cast<int>(face_index), TriangleCursor::build_cursor(source_selector, triangle),
+                                                 triangle.get_state(), Transform3d::Identity(), true);
+                }
+            }
+            return true;
+        });
+    }
+
+    return target_selector.serialize();
 }
 
 } // namespace Slic3r

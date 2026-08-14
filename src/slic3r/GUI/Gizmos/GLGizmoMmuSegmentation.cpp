@@ -13,6 +13,7 @@
 #include "slic3r/GUI/Collab/CollabSession.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/AutoPaintSegmentation.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
 
 
@@ -157,6 +158,11 @@ void GLGizmoMmuSegmentation::init_extruders_data(const std::vector<ColorRGBA> &e
     m_extruders_colors = extruder_colors;
     m_display_filament_ids = get_display_filament_ids(m_extruders_colors.size());
 
+    const size_t old_auto_paint_filament_count = m_auto_paint_filaments.size();
+    m_auto_paint_filaments.resize(m_extruders_colors.size(), true);
+    for (size_t filament_idx = old_auto_paint_filament_count; filament_idx < m_auto_paint_filaments.size(); ++filament_idx)
+        m_auto_paint_filaments[filament_idx] = true;
+
     m_selected_extruder_idx = 0;
     if (!m_display_filament_ids.empty()) {
         auto selected_it = std::find(m_display_filament_ids.begin(), m_display_filament_ids.end(), old_selected_filament_id);
@@ -240,6 +246,13 @@ bool GLGizmoMmuSegmentation::on_init()
     m_desc["replace_only_tooltip"]            = _L("Paint over one filament only. Every tool then recolors just the chosen "
                                                    "filament and leaves the other colors in the painted area untouched.");
     m_desc["replace_source"]                  = _L("Filament to replace");
+
+    // Geometry-aware automatic painting descriptions
+    m_desc["auto_paint_colors"]   = _L("Automatic painting colors");
+    m_desc["auto_paint_boundary"] = _L("Follow geometry");
+    m_desc["auto_paint"]          = _L("Auto paint model");
+    m_desc["auto_paint_tooltip"]  = _L("Replace the current painting with automatically allocated colors. Sharp creases and "
+                                        "disconnected parts are treated as likely boundaries; smooth areas are divided by surface distance.");
 
     init_extruders_data();
 
@@ -461,6 +474,8 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
     const float remove_btn_width = m_imgui->calc_text_size(m_desc.at("remove_all")).x + m_imgui->scaled(1.f);
     const float filter_btn_width = m_imgui->calc_text_size(m_desc.at("perform")).x + m_imgui->scaled(1.f);
     const float remap_btn_width = m_imgui->calc_text_size(m_desc.at("perform_remap")).x + m_imgui->scaled(1.f);
+    const float auto_paint_width = std::max(m_imgui->calc_text_size(m_desc.at("auto_paint_colors")).x,
+                                            m_imgui->calc_text_size(m_desc.at("auto_paint")).x) + m_imgui->scaled(1.f);
     const float buttons_width = remove_btn_width + filter_btn_width + remap_btn_width + m_imgui->scaled(2.f);
     const float minimal_slider_width = m_imgui->scaled(4.f);
     const float color_button_width = m_imgui->calc_text_size(std::string_view{""}).x + m_imgui->scaled(1.75f);
@@ -490,6 +505,7 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
 
     window_width = std::max(window_width, total_text_max);
     window_width = std::max(window_width, buttons_width);
+    window_width = std::max(window_width, auto_paint_width);
     window_width = std::max(window_width, max_filament_items_per_line * filament_item_width + +m_imgui->scaled(0.5f));
 
     const float sliders_width = m_imgui->scaled(7.0f);
@@ -671,6 +687,43 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
         m_imgui->text(wxString::Format(_L("/ %d"), int(n_extruder_colors)));
         ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
     }
+
+    ImGui::Separator();
+    m_imgui->text(m_desc.at("auto_paint_colors"));
+    size_t auto_paint_color_count = 0;
+    for (size_t display_idx = 0; display_idx < n_extruder_colors; ++display_idx) {
+        const unsigned int filament_id = m_display_filament_ids[display_idx];
+        if (filament_id == 0 || filament_id > m_auto_paint_filaments.size())
+            continue;
+
+        if (display_idx % max_filament_items_per_line != 0)
+            ImGui::SameLine();
+        bool              enabled        = m_auto_paint_filaments[filament_id - 1];
+        const std::string checkbox_label = std::to_string(display_idx + 1) + "##auto_paint_filament_" + std::to_string(filament_id);
+        if (ImGui::Checkbox(checkbox_label.c_str(), &enabled))
+            m_auto_paint_filaments[filament_id - 1] = enabled;
+        if (enabled)
+            ++auto_paint_color_count;
+    }
+
+    ImGui::AlignTextToFramePadding();
+    m_imgui->text(m_desc.at("auto_paint_boundary"));
+    ImGui::SameLine(sliders_left_width);
+    ImGui::PushItemWidth(sliders_width);
+    m_imgui->bbl_slider_float_style("##auto_paint_boundary", &m_auto_paint_boundary_preference, 0.f, 100.f, "%.0f%%", 1.f, true);
+    ImGui::SameLine(drag_left_width + sliders_left_width);
+    ImGui::PushItemWidth(1.5f * slider_icon_width);
+    ImGui::BBLDragFloat("##auto_paint_boundary_input", &m_auto_paint_boundary_preference, 1.f, 0.f, 100.f, "%.0f%%");
+    m_auto_paint_boundary_preference = std::clamp(m_auto_paint_boundary_preference, 0.f, 100.f);
+
+    m_imgui->disabled_begin(auto_paint_color_count < 2);
+    if (m_imgui->button(m_desc.at("auto_paint")))
+        auto_paint_model();
+    m_imgui->disabled_end();
+    if (ImGui::IsItemHovered())
+        m_imgui->tooltip(auto_paint_color_count < 2 ? _L("Select at least two colors.") : m_desc.at("auto_paint_tooltip"),
+                         max_tooltip_width);
+    ImGui::Separator();
 
     m_imgui->text(m_desc.at("tool_type"));
 
@@ -1002,6 +1055,65 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
     render_collab_overlay();
 }
 
+void GLGizmoMmuSegmentation::auto_paint_model()
+{
+    ModelObject* model_object = m_c->selection_info()->model_object();
+    if (model_object == nullptr)
+        return;
+
+    std::vector<unsigned int> filament_ids;
+    const size_t              display_count = std::min(EXTRUDERS_LIMIT, m_display_filament_ids.size());
+    filament_ids.reserve(display_count);
+    for (size_t display_idx = 0; display_idx < display_count; ++display_idx) {
+        const unsigned int filament_id = m_display_filament_ids[display_idx];
+        if (filament_id >= 1 && filament_id <= m_auto_paint_filaments.size() && m_auto_paint_filaments[filament_id - 1])
+            filament_ids.push_back(filament_id);
+    }
+    if (filament_ids.size() < 2)
+        return;
+
+    indexed_triangle_set combined_mesh;
+    std::vector<size_t>  face_offsets;
+    std::vector<size_t>  face_counts;
+    face_offsets.reserve(m_triangle_selectors.size());
+    face_counts.reserve(m_triangle_selectors.size());
+
+    for (const ModelVolume* volume : model_object->volumes) {
+        if (!volume->is_model_part())
+            continue;
+
+        TriangleMesh transformed_mesh = volume->mesh();
+        transformed_mesh.transform(volume->get_matrix());
+        face_offsets.push_back(combined_mesh.indices.size());
+        face_counts.push_back(transformed_mesh.its.indices.size());
+        its_merge(combined_mesh, transformed_mesh.its);
+    }
+
+    if (combined_mesh.indices.empty() || face_counts.size() != m_triangle_selectors.size())
+        return;
+
+    AutoPaint::SegmentationOptions options;
+    options.target_regions                           = filament_ids.size();
+    options.boundary_preference                      = m_auto_paint_boundary_preference / 100.f;
+    const AutoPaint::SegmentationResult segmentation = AutoPaint::segment_by_geometry(combined_mesh, options);
+    if (segmentation.face_regions.size() != combined_mesh.indices.size() || segmentation.region_count() == 0)
+        return;
+
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Automatic color painting"), UndoRedo::SnapshotType::GizmoAction);
+    for (size_t volume_idx = 0; volume_idx < m_triangle_selectors.size(); ++volume_idx) {
+        TriangleSelectorGUI& selector = *m_triangle_selectors[volume_idx];
+        selector.reset();
+        for (size_t face_idx = 0; face_idx < face_counts[volume_idx]; ++face_idx) {
+            const size_t combined_face_idx = face_offsets[volume_idx] + face_idx;
+            const size_t palette_idx       = segmentation.face_regions[combined_face_idx] % filament_ids.size();
+            selector.set_facet(static_cast<int>(face_idx), static_cast<EnforcerBlockerType>(filament_ids[palette_idx]));
+        }
+        selector.request_update_render_data(true);
+    }
+
+    update_model_object();
+    m_parent.set_as_dirty();
+}
 
 void GLGizmoMmuSegmentation::update_model_object()
 {

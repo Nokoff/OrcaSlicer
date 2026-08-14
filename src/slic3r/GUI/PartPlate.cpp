@@ -5084,10 +5084,42 @@ void PartPlateList::update_logo_texture_filename(const std::string &texture_file
 //update current slice context into backgroud slicing process
 void PartPlateList::update_slice_context_to_current_plate(BackgroundSlicingProcess& process)
 {
-	PartPlate* current_plate;
+	auto clear_process_context = [&process]() {
+		process.set_fff_print(nullptr);
+		process.set_gcode_result(nullptr);
+		process.set_current_plate(nullptr);
+	};
 
-	current_plate = m_plate_list[m_current_plate];
-	assert(current_plate != NULL);
+	if (m_current_plate < 0 || m_current_plate >= int(m_plate_list.size())) {
+		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": invalid current plate " << m_current_plate
+		                         << " for plate count " << m_plate_list.size();
+		clear_process_context();
+		return;
+	}
+
+	PartPlate* current_plate = m_plate_list[m_current_plate];
+	if (current_plate == nullptr) {
+		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": current plate is null";
+		clear_process_context();
+		return;
+	}
+
+	// PartPlate caches non-owning pointers while PartPlateList owns the Print and
+	// GCodeResult maps. Re-resolve both from those maps after structural changes
+	// such as arrangement, which may recycle plates and destroy their old Print.
+	if (printer_technology == ptFFF) {
+		const int print_index = current_plate->m_print_index;
+		auto print_it = m_print_list.find(print_index);
+		auto gcode_it = m_gcode_result_list.find(print_index);
+		if (print_it == m_print_list.end() || gcode_it == m_gcode_result_list.end()) {
+			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": current plate references missing print index " << print_index;
+			clear_process_context();
+			return;
+		}
+
+		if (current_plate->m_print != print_it->second || current_plate->m_gcode_result != gcode_it->second)
+			current_plate->set_print(print_it->second, gcode_it->second, print_index);
+	}
 
 	current_plate->update_slice_context(process);
 

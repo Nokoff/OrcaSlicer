@@ -87,7 +87,15 @@ public:
 	// Stop the background processing and finalize the bacgkround processing thread, remove temp files.
 	~BackgroundSlicingProcess();
 
-	void set_fff_print(Print *print) { m_fff_print = print; }
+	void set_fff_print(Print *print)
+	{
+		// m_print aliases the currently selected technology. Keep it synchronized when
+		// the FFF print is replaced or detached so neither accessor can retain a
+		// pointer to a destroyed plate-owned Print.
+		if (m_print == m_fff_print)
+			m_print = print;
+		m_fff_print = print;
+	}
     void set_sla_print(SLAPrint *print) { m_sla_print = print; m_sla_print->set_printer(&m_sla_archive); }
 	void set_thumbnail_cb(ThumbnailsGeneratorCallback cb) { m_thumbnail_cb = cb; }
 	void set_gcode_result(GCodeProcessorResult* result) { m_gcode_result = result; }

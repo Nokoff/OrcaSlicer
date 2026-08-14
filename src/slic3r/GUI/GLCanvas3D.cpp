@@ -2770,7 +2770,12 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
                 // float v = dynamic_cast<const ConfigOptionFloat*>(m_config->option("prime_volume"))->value;
                 Vec3d plate_origin = ppl.get_plate(plate_id)->get_origin();
 
-                const Print* print = m_process->fff_print();
+                // The active Print is temporarily detached while arrangement
+                // recycles plates. Do not dereference it until the new current
+                // plate has rebound the slicing context.
+                const Print* print = m_process != nullptr ? m_process->fff_print() : nullptr;
+                if (print == nullptr)
+                    continue;
                 const auto& wipe_tower_data = print->wipe_tower_data(filaments_count);
                 float brim_width = wipe_tower_data.brim_width;
                 const DynamicPrintConfig &print_cfg   = wxGetApp().preset_bundle->prints.get_edited_preset().config;

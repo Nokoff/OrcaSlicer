@@ -712,6 +712,7 @@ public:
     //BBS: is the background process slicing currently
     bool is_background_process_slicing() const;
     //BBS: update slicing context
+    void clear_slicing_context();
     void update_slicing_context_to_current_partplate();
     //BBS: show object info
     void show_object_info();

@@ -5,6 +5,8 @@
 
 
 #include <cfloat>
+#include <functional>
+#include <optional>
 #include "Point.hpp"
 #include "TriangleMesh.hpp"
 
@@ -374,6 +376,25 @@ public:
     // The operation may merge split triangles if they are being assigned the same color.
     void seed_fill_apply_on_triangles(EnforcerBlockerType new_state);
 
+    // Painting data saved before an operation replaces a volume's mesh.
+    struct SavedPainting {
+        TriangleMesh          mesh;
+        TriangleSplittingData supported;
+        TriangleSplittingData seam;
+        TriangleSplittingData mmu;
+        TriangleSplittingData fuzzy;
+    };
+
+    // Remap painting data from source mesh to target mesh using spatial mapping.
+    // target_transform moves the target mesh into the source mesh's coordinate space.
+    // Existing painting may be supplied when several source volumes are merged into one target volume.
+    static TriangleSplittingData remap_painting(
+        const indexed_triangle_set& source_its,
+        const TriangleSplittingData& source_painting,
+        const indexed_triangle_set& target_its,
+        const Transform3d& target_transform,
+        const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting);
+
     // Orca: Restrict painting to triangles that currently hold one of the given states, so that a
     // single filament can be recolored inside an area without disturbing the other filaments there.
     // Triangles in any other state are left untouched and are not subdivided.
@@ -536,6 +557,8 @@ private:
 
     int m_free_triangles_head { -1 };
     int m_free_vertices_head { -1 };
+
+    friend class TriangleCursor;
 };
 
 

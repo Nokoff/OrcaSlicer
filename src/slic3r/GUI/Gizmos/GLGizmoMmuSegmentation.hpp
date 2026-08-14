@@ -139,6 +139,11 @@ protected:
     bool                              m_replace_only = false;
     size_t                            m_replace_source_idx = 0;
 
+    // Geometry-aware automatic painting. Entries are indexed by the actual
+    // filament ID minus one, so palette reordering does not change the choice.
+    std::vector<bool> m_auto_paint_filaments;
+    float             m_auto_paint_boundary_preference = 75.f;
+
     // Minimal context for gradient rendering; only physical_colors is used
     MixedFilamentDisplayContext       m_mixed_display_context;
 
@@ -163,7 +168,8 @@ private:
     void update_triangle_selectors_colors();
     void init_extruders_data();
     void init_extruders_data(const std::vector<ColorRGBA> &extruder_colors);
-    
+    void auto_paint_model();
+
     // Filament remapping methods
     void remap_filament_assignments();
     void render_filament_remap_ui(float window_width, float max_tooltip_width);

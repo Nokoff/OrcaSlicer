@@ -2039,6 +2039,46 @@ void ModelVolume::reset_extra_facets()
     this->fuzzy_skin_facets.reset();
 }
 
+std::optional<TriangleSelector::SavedPainting> ModelVolume::save_painting() const
+{
+    if (!is_any_painted() || !is_model_part() || mesh().empty())
+        return {};
+
+    TriangleSelector::SavedPainting painting;
+    painting.mesh = mesh();
+    painting.supported = supported_facets.get_data();
+    painting.seam = seam_facets.get_data();
+    painting.mmu = mmu_segmentation_facets.get_data();
+    painting.fuzzy = fuzzy_skin_facets.get_data();
+    return painting;
+}
+
+void ModelVolume::restore_painting(const std::optional<TriangleSelector::SavedPainting>& saved, bool keep_existing_paint)
+{
+    if (!keep_existing_paint)
+        reset_extra_facets();
+    if (!saved)
+        return;
+
+    auto remap = [&](const TriangleSelector::TriangleSplittingData& source, FacetsAnnotation& target) {
+        if (source.bitstream.empty())
+            return;
+
+        const std::optional<std::reference_wrapper<const TriangleSelector::TriangleSplittingData>> existing =
+            keep_existing_paint ? std::optional<std::reference_wrapper<const TriangleSelector::TriangleSplittingData>>(std::cref(target.get_data())) :
+                                  std::nullopt;
+        auto remapped = TriangleSelector::remap_painting(saved->mesh.its, source, mesh().its,
+                                                         Geometry::translation_transform(mesh().get_init_shift()), existing);
+        if (!remapped.bitstream.empty())
+            target.set_data(std::move(remapped));
+    };
+
+    remap(saved->supported, supported_facets);
+    remap(saved->seam, seam_facets);
+    remap(saved->mmu, mmu_segmentation_facets);
+    remap(saved->fuzzy, fuzzy_skin_facets);
+}
+
 static void invalidate_translations(ModelObject* object, const ModelInstance* src_instance)
 {
     if (!object->origin_translation.isApprox(Vec3d::Zero()) && src_instance->get_offset().isApprox(Vec3d::Zero())) {

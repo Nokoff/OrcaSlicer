@@ -28,6 +28,8 @@ set(lisbslic3r_sources
     Algorithm/RegionExpansion.cpp
     Algorithm/RegionExpansion.hpp
     AnyPtr.hpp
+    AutoPaintSegmentation.cpp
+    AutoPaintSegmentation.hpp
     AppConfig.cpp
     AppConfig.hpp
     SecretStore.cpp

@@ -22923,9 +22923,8 @@ int Plater::delete_plate(int plate_index)
 
     take_snapshot("delete partplate");
 
-    // CRASH FIX: Clear fff_print reference before PartPlateList::delete_plate destroys the Print,
-    // preventing dangling pointer access during subsequent update calls.
-    p->background_process.set_fff_print(nullptr);
+    // Clear references before PartPlateList::delete_plate destroys the Print.
+    clear_slicing_context();
 
     ret = p->partplate_list.delete_plate(index);
 
@@ -22956,6 +22955,13 @@ bool Plater::is_background_process_slicing() const
 }
 
 //BBS: update slicing context
+void Plater::clear_slicing_context()
+{
+    p->background_process.set_fff_print(nullptr);
+    p->background_process.set_gcode_result(nullptr);
+    p->background_process.set_current_plate(nullptr);
+}
+
 void Plater::update_slicing_context_to_current_partplate()
 {
     p->partplate_list.update_slice_context_to_current_plate(p->background_process);
