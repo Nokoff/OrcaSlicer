@@ -386,9 +386,20 @@ std::vector<size_t> segment_face_ids(const indexed_triangle_set& proxy_mesh,
                                      size_t                      segment_number,
                                      size_t                      number_of_rays)
 {
-    std::vector<size_t> result;
-    if (proxy_mesh.indices.empty() || target_mesh.indices.empty())
-        return result;
+    std::vector<std::vector<size_t>> results =
+        segment_face_ids_multi(proxy_mesh, target_mesh, {{smoothing_alpha, segment_number}}, number_of_rays);
+    return results.empty() ? std::vector<size_t>() : std::move(results.front());
+}
+
+std::vector<std::vector<size_t>> segment_face_ids_multi(
+    const indexed_triangle_set&                   proxy_mesh,
+    const indexed_triangle_set&                   target_mesh,
+    const std::vector<std::pair<double, size_t>>& configurations,
+    size_t                                        number_of_rays)
+{
+    std::vector<std::vector<size_t>> results(configurations.size());
+    if (proxy_mesh.indices.empty() || target_mesh.indices.empty() || configurations.empty())
+        return results;
 
     _EpicMesh mesh;
     triangle_mesh_to_cgal(TriangleMesh(proxy_mesh), mesh);
@@ -400,13 +411,21 @@ std::vector<size_t> segment_face_ids(const indexed_triangle_set& proxy_mesh,
     using Facet_int_map = _EpicMesh::Property_map<face_descriptor, std::size_t>;
 
     Facet_double_map sdf_property_map = mesh.add_property_map<face_descriptor, double>("f:sdf").first;
-    Facet_int_map segment_property_map = mesh.add_property_map<face_descriptor, std::size_t>("f:sid").first;
     CGAL::sdf_values(mesh, sdf_property_map, 2.0 / 3.0 * CGAL_PI, std::max(number_of_rays, size_t(1)), true);
-    CGAL::segmentation_from_sdf_values(mesh,
-                                       sdf_property_map,
-                                       segment_property_map,
-                                       std::max(segment_number, size_t(1)),
-                                       std::clamp(smoothing_alpha, 0., 1.));
+    std::vector<Facet_int_map> segment_property_maps;
+    segment_property_maps.reserve(configurations.size());
+    for (size_t config_idx = 0; config_idx < configurations.size(); ++config_idx) {
+        const auto [smoothing_alpha, segment_number] = configurations[config_idx];
+        Facet_int_map segment_property_map =
+            mesh.add_property_map<face_descriptor, std::size_t>("f:sid_" + std::to_string(config_idx)).first;
+        CGAL::segmentation_from_sdf_values(mesh,
+                                           sdf_property_map,
+                                           segment_property_map,
+                                           std::max(segment_number, size_t(1)),
+                                           std::clamp(smoothing_alpha, 0., 1.));
+        segment_property_maps.push_back(segment_property_map);
+        results[config_idx].reserve(target_mesh.indices.size());
+    }
 
     using Primitive = CGAL::AABB_face_graph_triangle_primitive<_EpicMesh>;
     using Aabb_traits = CGAL::AABB_traits<EpicKernel, Primitive>;
@@ -414,15 +433,15 @@ std::vector<size_t> segment_face_ids(const indexed_triangle_set& proxy_mesh,
     Aabb_tree tree(mesh.faces().begin(), mesh.faces().end(), mesh);
     tree.accelerate_distance_queries();
 
-    result.reserve(target_mesh.indices.size());
     for (const Vec3i32& face : target_mesh.indices) {
         const Vec3f center =
             (target_mesh.vertices[face[0]] + target_mesh.vertices[face[1]] + target_mesh.vertices[face[2]]) / 3.f;
         const EpicKernel::Point_3 query(center.x(), center.y(), center.z());
         const face_descriptor closest_face = tree.closest_point_and_primitive(query).second;
-        result.push_back(segment_property_map[closest_face]);
+        for (size_t config_idx = 0; config_idx < segment_property_maps.size(); ++config_idx)
+            results[config_idx].push_back(segment_property_maps[config_idx][closest_face]);
     }
-    return result;
+    return results;
 }
 
 void merge(std::vector<_EpicMesh>& srcs, _EpicMesh& dst)

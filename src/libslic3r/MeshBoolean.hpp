@@ -75,6 +75,14 @@ std::vector<size_t> segment_face_ids(const indexed_triangle_set& proxy_mesh,
                                      double                      smoothing_alpha,
                                      size_t                      segment_number,
                                      size_t                      number_of_rays = 5);
+
+// Calculates SDF once and returns one transferred label set for each
+// (smoothing, segment count) configuration.
+std::vector<std::vector<size_t>> segment_face_ids_multi(
+    const indexed_triangle_set&                   proxy_mesh,
+    const indexed_triangle_set&                   target_mesh,
+    const std::vector<std::pair<double, size_t>>& configurations,
+    size_t                                        number_of_rays = 5);
 TriangleMesh merge(std::vector<TriangleMesh> meshes);
 
 bool does_bound_a_volume(const CGALMesh &mesh);

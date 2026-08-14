@@ -4,6 +4,8 @@
 #include "libslic3r/TriangleMesh.hpp"
 
 #include <algorithm>
+#include <fstream>
+#include <limits>
 #include <queue>
 #include <unordered_map>
 
@@ -152,6 +154,44 @@ indexed_triangle_set make_smooth_tapered_limb()
     return mesh;
 }
 
+size_t nearest_face(const indexed_triangle_set& mesh, const Vec3f& landmark)
+{
+    size_t nearest          = 0;
+    float  nearest_distance = std::numeric_limits<float>::max();
+    for (size_t face_idx = 0; face_idx < mesh.indices.size(); ++face_idx) {
+        const Vec3i32& face     = mesh.indices[face_idx];
+        const Vec3f    center   = (mesh.vertices[face[0]] + mesh.vertices[face[1]] + mesh.vertices[face[2]]) / 3.f;
+        const float    distance = (center - landmark).squaredNorm();
+        if (distance < nearest_distance) {
+            nearest_distance = distance;
+            nearest          = face_idx;
+        }
+    }
+    return nearest;
+}
+
+bool load_exact_mesh(const std::string& path, indexed_triangle_set& mesh)
+{
+    static_assert(sizeof(Vec3f) == 3 * sizeof(float));
+    static_assert(sizeof(Vec3i32) == 3 * sizeof(int32_t));
+
+    std::ifstream input(path, std::ios::binary);
+    char          magic[8] = {};
+    uint64_t      vertex_count;
+    uint64_t      face_count;
+    input.read(magic, sizeof(magic));
+    input.read(reinterpret_cast<char*>(&vertex_count), sizeof(vertex_count));
+    input.read(reinterpret_cast<char*>(&face_count), sizeof(face_count));
+    if (!input.good() || std::string(magic, sizeof(magic)) != "APGMESH1" || vertex_count > 10'000'000 || face_count > 20'000'000)
+        return false;
+
+    mesh.vertices.resize(vertex_count);
+    mesh.indices.resize(face_count);
+    input.read(reinterpret_cast<char*>(mesh.vertices.data()), std::streamsize(mesh.vertices.size() * sizeof(Vec3f)));
+    input.read(reinterpret_cast<char*>(mesh.indices.data()), std::streamsize(mesh.indices.size() * sizeof(Vec3i32)));
+    return input.good();
+}
+
 } // namespace
 
 TEST_CASE("Auto paint handles an empty mesh", "[AutoPaint]")
@@ -256,6 +296,79 @@ TEST_CASE("Auto paint separates rounded lobes at a concave neck", "[AutoPaint]")
     REQUIRE(result.region_count() >= 2);
     REQUIRE(result.region_count() <= options.target_regions * 6);
     const std::vector<std::vector<size_t>> neighbors = face_neighbors(dumbbell);
+    for (size_t region = 0; region < result.region_count(); ++region)
+        CHECK(region_is_connected(neighbors, result.face_regions, region));
+}
+
+TEST_CASE("Auto paint preserves the semantic parts of the gnome", "[AutoPaint][GnomeRegression]")
+{
+    const std::string    fixture = std::string(TEST_DATA_DIR) + "/auto_paint/gnome_regression.mesh";
+    indexed_triangle_set mesh;
+    REQUIRE(load_exact_mesh(fixture, mesh));
+
+    AutoPaint::SegmentationOptions options;
+    options.target_regions                     = 4;
+    options.boundary_preference                = 0.8f;
+    const AutoPaint::SegmentationResult result = AutoPaint::segment_by_geometry(mesh, options);
+
+    REQUIRE(result.face_regions.size() == mesh.indices.size());
+    REQUIRE(result.region_count() >= 14);
+    CHECK(result.region_count() <= 32);
+
+    const auto   region_at       = [&](const Vec3f& landmark) { return result.face_regions[nearest_face(mesh, landmark)]; };
+    const size_t hat_tip         = region_at(Vec3f(0.0047f, 0.3108f, 0.8112f));
+    const size_t hat_middle      = region_at(Vec3f(-0.0002f, -0.0154f, 0.2664f));
+    const size_t hat_brim        = region_at(Vec3f(-0.0023f, -0.1753f, 0.0226f));
+    const size_t nose            = region_at(Vec3f(-0.0030f, -0.3589f, -0.2073f));
+    const size_t left_brow       = region_at(Vec3f(-0.1405f, -0.2907f, -0.2775f));
+    const size_t right_brow      = region_at(Vec3f(0.1370f, -0.2908f, -0.2765f));
+    const size_t left_moustache  = region_at(Vec3f(-0.1929f, -0.2945f, -0.3183f));
+    const size_t right_moustache = region_at(Vec3f(0.1912f, -0.2950f, -0.3172f));
+    const size_t upper_beard     = region_at(Vec3f(0.0005f, -0.3878f, -0.4384f));
+    const size_t lower_beard     = region_at(Vec3f(-0.0002f, -0.4425f, -0.6906f));
+    const size_t left_sleeve     = region_at(Vec3f(-0.3840f, 0.0322f, -0.4796f));
+    const size_t right_sleeve    = region_at(Vec3f(0.3804f, 0.0309f, -0.4773f));
+    const size_t left_hand       = region_at(Vec3f(-0.4435f, -0.0058f, -0.6549f));
+    const size_t right_hand      = region_at(Vec3f(0.4434f, -0.0067f, -0.6555f));
+    const size_t left_foot       = region_at(Vec3f(-0.2152f, -0.3508f, -0.8498f));
+    const size_t right_foot      = region_at(Vec3f(0.2235f, -0.3507f, -0.8488f));
+
+    CAPTURE(hat_tip, hat_middle, hat_brim, nose, left_brow, right_brow, left_moustache, right_moustache, upper_beard, lower_beard,
+            left_sleeve, right_sleeve, left_hand, right_hand, left_foot, right_foot);
+    CHECK(hat_tip == hat_middle);
+    CHECK(hat_middle == hat_brim);
+    CHECK(upper_beard == lower_beard);
+    CHECK(nose != hat_brim);
+    CHECK(nose != upper_beard);
+    CHECK(left_moustache != upper_beard);
+    CHECK(right_moustache != upper_beard);
+    CHECK(left_moustache != nose);
+    CHECK(right_moustache != nose);
+    CHECK(left_brow == left_moustache);
+    CHECK(right_brow == right_moustache);
+    CHECK(left_brow != upper_beard);
+    CHECK(right_brow != upper_beard);
+    CHECK(left_sleeve != left_hand);
+    CHECK(right_sleeve != right_hand);
+    CHECK(left_sleeve != upper_beard);
+    CHECK(right_sleeve != upper_beard);
+    CHECK(left_foot != right_foot);
+    CHECK(left_foot != left_hand);
+    CHECK(right_foot != right_hand);
+    CHECK(left_foot != lower_beard);
+    CHECK(right_foot != lower_beard);
+
+    CHECK(result.region_palette[left_moustache] == result.region_palette[right_moustache]);
+    CHECK(result.region_palette[left_sleeve] == result.region_palette[right_sleeve]);
+    CHECK(result.region_palette[left_hand] == result.region_palette[right_hand]);
+    CHECK(result.region_palette[left_foot] == result.region_palette[right_foot]);
+    CHECK(result.region_palette[hat_tip] != result.region_palette[nose]);
+    CHECK(result.region_palette[hat_tip] != result.region_palette[upper_beard]);
+    CHECK(result.region_palette[nose] != result.region_palette[upper_beard]);
+    CHECK(result.region_palette[nose] != result.region_palette[left_moustache]);
+    CHECK(result.region_palette[upper_beard] != result.region_palette[left_moustache]);
+
+    const std::vector<std::vector<size_t>> neighbors = face_neighbors(mesh);
     for (size_t region = 0; region < result.region_count(); ++region)
         CHECK(region_is_connected(neighbors, result.face_regions, region));
 }
