@@ -3,6 +3,7 @@
 #include "QuadricEdgeCollapse.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -157,6 +158,90 @@ std::vector<SurfaceEdge> build_surface_edges(const indexed_triangle_set& mesh, c
     }
 
     return edges;
+}
+
+void snap_shape_boundaries_to_geometry(const std::vector<SurfaceEdge>& edges, float boundary_threshold, std::vector<size_t>& labels)
+{
+    struct WeightedNeighbor
+    {
+        size_t face   = 0;
+        float  weight = 0.f;
+    };
+    struct FaceNeighborhood
+    {
+        std::array<WeightedNeighbor, 3> neighbors;
+        size_t                          count = 0;
+
+        void add(size_t face, float weight)
+        {
+            if (count < neighbors.size())
+                neighbors[count++] = {face, weight};
+        }
+    };
+
+    if (labels.empty())
+        return;
+
+    const float                   threshold = std::max(0.5f * boundary_threshold, 1.f);
+    std::vector<FaceNeighborhood> neighborhoods(labels.size());
+    for (const SurfaceEdge& edge : edges) {
+        // Crossing a smooth edge is expensive, while a modeled crease nearly
+        // disconnects its two faces. This lets the label contour slide locally
+        // until it sits on the strongest nearby geometric boundary.
+        const float relative_strength = edge.boundary_strength / threshold;
+        const float squared_strength  = relative_strength * relative_strength;
+        const float weight            = 1.f / (1.f + squared_strength * squared_strength);
+        neighborhoods[edge.first_face].add(edge.second_face, weight);
+        neighborhoods[edge.second_face].add(edge.first_face, weight);
+    }
+
+    const std::vector<size_t> original_labels = labels;
+    constexpr float           data_weight     = 0.4f;
+    constexpr float           switch_margin   = 0.1f;
+    // In-place updates monotonically improve the local boundary energy and
+    // avoid the checkerboard oscillation of a synchronous majority filter.
+    for (size_t pass = 0; pass < 8; ++pass) {
+        size_t changed_count = 0;
+        for (size_t face_idx = 0; face_idx < labels.size(); ++face_idx) {
+            std::array<size_t, 5> candidate_labels;
+            std::array<float, 5>  candidate_scores{};
+            size_t                candidate_count = 0;
+            const auto            add_score       = [&](size_t label, float score) {
+                for (size_t candidate = 0; candidate < candidate_count; ++candidate) {
+                    if (candidate_labels[candidate] == label) {
+                        candidate_scores[candidate] += score;
+                        return;
+                    }
+                }
+                candidate_labels[candidate_count] = label;
+                candidate_scores[candidate_count] = score;
+                ++candidate_count;
+            };
+
+            add_score(labels[face_idx], 0.f);
+            add_score(original_labels[face_idx], data_weight);
+            for (size_t neighbor_idx = 0; neighbor_idx < neighborhoods[face_idx].count; ++neighbor_idx) {
+                const WeightedNeighbor& neighbor = neighborhoods[face_idx].neighbors[neighbor_idx];
+                add_score(labels[neighbor.face], neighbor.weight);
+            }
+
+            size_t current_candidate = 0;
+            size_t best_candidate    = 0;
+            for (size_t candidate = 0; candidate < candidate_count; ++candidate) {
+                if (candidate_labels[candidate] == labels[face_idx])
+                    current_candidate = candidate;
+                if (candidate_scores[candidate] > candidate_scores[best_candidate])
+                    best_candidate = candidate;
+            }
+            if (candidate_labels[best_candidate] != labels[face_idx] &&
+                candidate_scores[best_candidate] > candidate_scores[current_candidate] + switch_margin) {
+                labels[face_idx] = candidate_labels[best_candidate];
+                ++changed_count;
+            }
+        }
+        if (changed_count == 0)
+            break;
+    }
 }
 
 void allocate_palette(const std::vector<SurfaceEdge>&  edges,
@@ -417,6 +502,27 @@ SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const S
         if (inserted)
             result.region_seed_faces.push_back(face_idx);
         result.face_regions[face_idx] = region_it->second;
+    }
+
+    if (has_shape_labels) {
+        snap_shape_boundaries_to_geometry(edges, boundary_threshold, result.face_regions);
+
+        // Boundary movement may trim a narrow bridge. Rebuild connected
+        // regions so every resulting paint region remains flood-fillable.
+        DisjointSet snapped_sets(faces);
+        for (const SurfaceEdge& edge : edges)
+            if (result.face_regions[edge.first_face] == result.face_regions[edge.second_face])
+                snapped_sets.unite(edge.first_face, edge.second_face);
+
+        region_by_root.clear();
+        result.region_seed_faces.clear();
+        for (size_t face_idx = 0; face_idx < mesh.indices.size(); ++face_idx) {
+            const size_t root                = snapped_sets.find(face_idx);
+            const auto [region_it, inserted] = region_by_root.emplace(root, region_by_root.size());
+            if (inserted)
+                result.region_seed_faces.push_back(face_idx);
+            result.face_regions[face_idx] = region_it->second;
+        }
     }
 
     allocate_palette(edges, faces, palette_size, result);
