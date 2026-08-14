@@ -40,6 +40,42 @@ TEST_CASE("Triangle selector round-trips painted states above sixteen", "[Triang
     CHECK(restored.has_facets(static_cast<EnforcerBlockerType>(painted_state)));
 }
 
+TEST_CASE("Magic fill recolors only the connected area with the clicked color", "[TriangleSelector][MMUPaint][MagicFill]")
+{
+    indexed_triangle_set its;
+    its.vertices = {
+        Vec3f(0.f, 0.f, 0.f),
+        Vec3f(1.f, 0.f, 0.f),
+        Vec3f(0.f, 1.f, 0.f),
+        Vec3f(1.f, 1.f, 0.f),
+        Vec3f(2.f, 0.f, 0.f),
+        Vec3f(2.f, 1.f, 0.f),
+    };
+    its.indices = {
+        stl_triangle_vertex_indices(0, 1, 2),
+        stl_triangle_vertex_indices(2, 1, 3),
+        stl_triangle_vertex_indices(1, 4, 3),
+        stl_triangle_vertex_indices(3, 4, 5),
+    };
+
+    TriangleSelector selector{TriangleMesh(its)};
+    constexpr auto source_color   = static_cast<EnforcerBlockerType>(2);
+    constexpr auto boundary_color = static_cast<EnforcerBlockerType>(3);
+    constexpr auto replacement    = static_cast<EnforcerBlockerType>(4);
+
+    selector.set_facet(0, source_color);
+    selector.set_facet(1, source_color);
+    selector.set_facet(2, boundary_color);
+    selector.set_facet(3, source_color);
+
+    selector.bucket_fill_select_triangles(Vec3f(1.f / 3.f, 1.f / 3.f, 0.f), 0, TriangleSelector::ClippingPlane(), -1.f, true, true);
+    selector.seed_fill_apply_on_triangles(replacement);
+
+    CHECK(selector.num_facets(replacement) == 2);
+    CHECK(selector.num_facets(boundary_color) == 1);
+    CHECK(selector.num_facets(source_color) == 1);
+}
+
 static indexed_triangle_set single_triangle()
 {
     indexed_triangle_set its;

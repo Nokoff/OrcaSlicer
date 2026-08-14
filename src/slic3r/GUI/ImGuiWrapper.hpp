@@ -26,6 +26,13 @@ class wxMouseEvent;
 class wxKeyEvent;
 struct ImRect;
 
+namespace ImGui {
+// Application-owned glyph slots used by the color-painting toolbar. Keeping these
+// here avoids modifying the vendored ImGui configuration for Orca-specific tools.
+inline constexpr wchar_t MagicFillButtonIcon     = 0x0845;
+inline constexpr wchar_t MagicFillButtonDarkIcon = 0x0846;
+} // namespace ImGui
+
 
 namespace Slic3r {
 namespace GUI {

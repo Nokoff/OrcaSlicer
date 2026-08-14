@@ -272,6 +272,7 @@ protected:
     enum class ToolType {
         BRUSH,
         BUCKET_FILL,
+        MAGIC_FILL,
         SMART_FILL,
         // BBS
         GAP_FILL,
