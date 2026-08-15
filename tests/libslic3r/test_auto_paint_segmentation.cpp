@@ -201,6 +201,35 @@ TEST_CASE("Auto paint handles an empty mesh", "[AutoPaint]")
     CHECK(result.region_seed_faces.empty());
 }
 
+TEST_CASE("Auto paint reports monotonic progress and cancels without partial output", "[AutoPaint][Progress]")
+{
+    const indexed_triangle_set cube = its_make_cube(10., 10., 10.);
+
+    std::vector<int>                          progress_values;
+    std::vector<AutoPaint::SegmentationStage> stages;
+    AutoPaint::SegmentationOptions            options;
+    options.progress_callback = [&](AutoPaint::SegmentationStage stage, int progress) {
+        stages.push_back(stage);
+        progress_values.push_back(progress);
+        return true;
+    };
+
+    const AutoPaint::SegmentationResult completed = AutoPaint::segment_by_geometry(cube, options);
+    REQUIRE_FALSE(completed.face_regions.empty());
+    REQUIRE_FALSE(progress_values.empty());
+    CHECK(progress_values.front() == 0);
+    CHECK(progress_values.back() == 100);
+    CHECK(std::is_sorted(progress_values.begin(), progress_values.end()));
+    CHECK(stages.front() == AutoPaint::SegmentationStage::PreparingGeometry);
+    CHECK(stages.back() == AutoPaint::SegmentationStage::Complete);
+
+    options.progress_callback                     = [](AutoPaint::SegmentationStage, int progress) { return progress < 55; };
+    const AutoPaint::SegmentationResult cancelled = AutoPaint::segment_by_geometry(cube, options);
+    CHECK(cancelled.face_regions.empty());
+    CHECK(cancelled.region_seed_faces.empty());
+    CHECK(cancelled.region_palette.empty());
+}
+
 TEST_CASE("Auto paint follows the six sharp sides of a cube", "[AutoPaint]")
 {
     const indexed_triangle_set     cube = its_make_cube(10., 10., 10.);

@@ -636,6 +636,11 @@ void allocate_palette(const std::vector<SurfaceEdge>&  edges,
 SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const SegmentationOptions& options)
 {
     SegmentationResult result;
+    const auto         report_progress = [&options](SegmentationStage stage, int progress) {
+        return !options.progress_callback || options.progress_callback(stage, progress);
+    };
+    if (!report_progress(SegmentationStage::PreparingGeometry, 0))
+        return result;
     if (mesh.indices.empty() || mesh.vertices.empty())
         return result;
 
@@ -648,6 +653,8 @@ SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const S
             return lhs.first_face < rhs.first_face;
         return lhs.second_face < rhs.second_face;
     });
+    if (!report_progress(SegmentationStage::PreparingGeometry, 12))
+        return {};
 
     const float  preference         = std::clamp(options.boundary_preference, 0.f, 1.f);
     const float  boundary_threshold = 18.f - 14.f * preference;
@@ -663,6 +670,8 @@ SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const S
     const bool          use_fine_shape_labels = mesh.indices.size() >= 10000;
     std::vector<size_t> coarse_shape_labels;
     std::vector<size_t> shape_labels;
+    if (!report_progress(SegmentationStage::AnalyzingShape, 20))
+        return {};
     if (mesh.indices.size() >= 2000) {
         try {
             indexed_triangle_set proxy_mesh       = mesh;
@@ -693,6 +702,8 @@ SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const S
             shape_labels.clear();
         }
     }
+    if (!report_progress(SegmentationStage::DetectingBoundaries, 55))
+        return {};
 
     const bool has_shape_labels = shape_labels.size() == mesh.indices.size() && coarse_shape_labels.size() == mesh.indices.size();
     if (has_shape_labels)
@@ -934,6 +945,8 @@ SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const S
                 break;
         }
     }
+    if (!report_progress(SegmentationStage::RefiningRegions, 76))
+        return {};
 
     std::unordered_map<size_t, size_t> region_by_root;
     region_by_root.reserve(component_count);
@@ -947,6 +960,8 @@ SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const S
     }
 
     std::vector<size_t> symmetry_partners;
+    if (!report_progress(SegmentationStage::MatchingSymmetry, 84))
+        return {};
     if (has_shape_labels && preference >= 0.6f) {
         const double minimum_detail_area = total_area / std::max<double>(maximum_regions * 20., 1.);
         symmetry_partners                = stabilize_bilateral_regions(mesh, faces, edges, minimum_detail_area, result);
@@ -1034,6 +1049,8 @@ SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const S
         }
     }
 
+    if (!report_progress(SegmentationStage::AssigningColors, 95))
+        return {};
     allocate_palette(edges, faces, palette_size, result);
     if (has_symmetry_partners) {
         std::unordered_map<size_t, size_t> compact_group;
@@ -1080,6 +1097,8 @@ SegmentationResult segment_by_geometry(const indexed_triangle_set& mesh, const S
         for (size_t region = 0; region < result.region_count(); ++region)
             result.region_palette[region] = group_palette[group_by_region[region]];
     }
+    if (!report_progress(SegmentationStage::Complete, 100))
+        return {};
     return result;
 }
 

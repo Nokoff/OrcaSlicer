@@ -11,6 +11,7 @@
 #include "slic3r/GUI/NotificationManager.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/Collab/CollabSession.hpp"
+#include "slic3r/GUI/Widgets/ProgressDialog.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/AutoPaintSegmentation.hpp"
@@ -19,7 +20,11 @@
 
 #include <GL/glew.h>
 #include <algorithm>
+#include <atomic>
 #include <boost/log/trivial.hpp>
+#include <chrono>
+#include <future>
+#include <memory>
 
 namespace Slic3r::GUI {
 
@@ -31,6 +36,20 @@ static inline void show_notification_extruders_limit_exceeded()
         ->push_notification(NotificationType::MmSegmentationExceededExtrudersLimit, NotificationManager::NotificationLevel::PrintInfoNotificationLevel,
                             GUI::format(_L("Filament count exceeds the maximum number that painting tool supports. Only the "
                                            "first %1% filaments will be available in painting tool."), GLGizmoMmuSegmentation::EXTRUDERS_LIMIT));
+}
+
+static wxString auto_paint_progress_message(AutoPaint::SegmentationStage stage)
+{
+    switch (stage) {
+    case AutoPaint::SegmentationStage::PreparingGeometry: return _L("Preparing model geometry...");
+    case AutoPaint::SegmentationStage::AnalyzingShape: return _L("Analyzing shape and thickness...");
+    case AutoPaint::SegmentationStage::DetectingBoundaries: return _L("Detecting natural part boundaries...");
+    case AutoPaint::SegmentationStage::RefiningRegions: return _L("Refining connected paint regions...");
+    case AutoPaint::SegmentationStage::MatchingSymmetry: return _L("Matching mirrored details...");
+    case AutoPaint::SegmentationStage::AssigningColors: return _L("Assigning selected colors...");
+    case AutoPaint::SegmentationStage::Complete: return _L("Automatic painting complete.");
+    }
+    return _L("Automatic painting...");
 }
 
 // --- Gradient rendering helpers (ported from MixedFilamentBadge) ---
@@ -1124,13 +1143,70 @@ void GLGizmoMmuSegmentation::auto_paint_model()
 
     if (combined_mesh.indices.empty() || face_counts.size() != m_triangle_selectors.size())
         return;
+    const size_t combined_face_count = combined_mesh.indices.size();
 
     AutoPaint::SegmentationOptions options;
-    options.target_regions                           = filament_ids.size();
-    options.boundary_preference                      = m_auto_paint_boundary_preference / 100.f;
-    wxBusyCursor wait;
-    const AutoPaint::SegmentationResult segmentation = AutoPaint::segment_by_geometry(combined_mesh, options);
-    if (segmentation.face_regions.size() != combined_mesh.indices.size() || segmentation.region_count() == 0)
+    options.target_regions      = filament_ids.size();
+    options.boundary_preference = m_auto_paint_boundary_preference / 100.f;
+
+    struct ProgressState
+    {
+        std::atomic<int>                          percent{0};
+        std::atomic<AutoPaint::SegmentationStage> stage{AutoPaint::SegmentationStage::PreparingGeometry};
+        std::atomic_bool                          cancel_requested{false};
+    };
+    const auto progress_state = std::make_shared<ProgressState>();
+    options.progress_callback = [progress_state](AutoPaint::SegmentationStage stage, int percent) {
+        progress_state->stage.store(stage, std::memory_order_relaxed);
+        progress_state->percent.store(percent, std::memory_order_relaxed);
+        return !progress_state->cancel_requested.load(std::memory_order_relaxed);
+    };
+
+    std::future<AutoPaint::SegmentationResult> segmentation_future =
+        std::async(std::launch::async, [mesh = std::move(combined_mesh), options = std::move(options)]() mutable {
+            return AutoPaint::segment_by_geometry(mesh, options);
+        });
+
+    ProgressDialog progress_dialog(_L("Automatic color painting"), auto_paint_progress_message(AutoPaint::SegmentationStage::PreparingGeometry),
+                                   100, find_toplevel_parent(wxGetApp().plater()),
+                                   wxPD_AUTO_HIDE | wxPD_APP_MODAL | wxPD_CAN_ABORT | wxPD_ELAPSED_TIME | wxPD_REMAINING_TIME);
+    bool cancel_requested = false;
+    while (segmentation_future.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready) {
+        if (cancel_requested) {
+            progress_dialog.Update(progress_state->percent.load(std::memory_order_relaxed));
+            continue;
+        }
+        const int                          percent = progress_state->percent.load(std::memory_order_relaxed);
+        const AutoPaint::SegmentationStage stage   = progress_state->stage.load(std::memory_order_relaxed);
+        if (!progress_dialog.Update(percent, auto_paint_progress_message(stage))) {
+            cancel_requested = true;
+            progress_state->cancel_requested.store(true, std::memory_order_relaxed);
+        }
+    }
+
+    AutoPaint::SegmentationResult segmentation;
+    try {
+        segmentation = segmentation_future.get();
+    } catch (const std::exception& error) {
+        BOOST_LOG_TRIVIAL(error) << "Automatic color painting failed: " << error.what();
+        if (cancel_requested)
+            return;
+        progress_dialog.Update(100, _L("Automatic painting failed."));
+        show_error(nullptr, _L("Automatic painting failed. The model was not changed."));
+        return;
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << "Automatic color painting failed with an unknown error";
+        if (cancel_requested)
+            return;
+        progress_dialog.Update(100, _L("Automatic painting failed."));
+        show_error(nullptr, _L("Automatic painting failed. The model was not changed."));
+        return;
+    }
+
+    if (cancel_requested)
+        return;
+    progress_dialog.Update(100, auto_paint_progress_message(AutoPaint::SegmentationStage::Complete));
+    if (segmentation.face_regions.size() != combined_face_count || segmentation.region_count() == 0)
         return;
 
     Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Automatic color painting"), UndoRedo::SnapshotType::GizmoAction);

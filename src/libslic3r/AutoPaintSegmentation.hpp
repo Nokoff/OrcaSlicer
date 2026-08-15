@@ -4,9 +4,25 @@
 #include "TriangleMesh.hpp"
 
 #include <cstddef>
+#include <functional>
 #include <vector>
 
 namespace Slic3r::AutoPaint {
+
+enum class SegmentationStage {
+    PreparingGeometry,
+    AnalyzingShape,
+    DetectingBoundaries,
+    RefiningRegions,
+    MatchingSymmetry,
+    AssigningColors,
+    Complete
+};
+
+// Called from the thread performing segmentation. Progress is an integer in
+// [0, 100]. Return false to cancel; a cancelled operation returns an empty
+// result so callers can never apply a partially segmented model.
+using ProgressCallback = std::function<bool(SegmentationStage stage, int progress)>;
 
 struct SegmentationOptions
 {
@@ -17,6 +33,8 @@ struct SegmentationOptions
     // 0 keeps only the strongest part boundaries. 1 preserves finer concave
     // seams and modeled creases.
     float boundary_preference = 0.75f;
+
+    ProgressCallback progress_callback;
 };
 
 struct SegmentationResult
