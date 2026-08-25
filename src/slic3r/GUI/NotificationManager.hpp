@@ -209,10 +209,20 @@ public:
 	void upload_job_notification_show_error(int id, const std::string& filename, const std::string& host);
     void push_slicing_serious_warning_notification(const std::string &text, std::vector<ModelObject const *> objs);
     void close_slicing_serious_warning_notification(const std::string &text);
+    // An offer to repair whatever caused the error, shown in place of the "Jump to" hyperlink.
+    struct SlicingErrorFix
+    {
+        std::string                        hypertext;
+        std::function<bool(wxEvtHandler *)> action;
+
+        bool valid() const { return !hypertext.empty() && bool(action); }
+    };
 	// Creates Slicing Error notification with a custom text and no fade out.
     // suggested_sink: when non zero and a single object is passed, the notification offers a one
     // click fix that sinks that object into the plate by that many mm and re-slices.
-    void push_slicing_error_notification(const std::string &text, std::vector<ModelObject const *> objs, double suggested_sink = 0.);
+    // fix: an explicit repair offer, taking precedence over both of the above.
+    void push_slicing_error_notification(const std::string &text, std::vector<ModelObject const *> objs, double suggested_sink = 0.,
+                                         SlicingErrorFix fix = {});
 	// Creates Slicing Warning notification with a custom text and no fade out.
     void push_slicing_warning_notification(const std::string &text, bool gray, ModelObject const *obj, ObjectID oid, int warning_step, int warning_msg_id, NotificationLevel level = NotificationLevel::WarningNotificationLevel);
 	// marks slicing errors as gray

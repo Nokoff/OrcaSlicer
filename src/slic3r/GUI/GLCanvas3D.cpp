@@ -7,6 +7,7 @@
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
+#include "libslic3r/GCode/WipeTower2.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/Layer.hpp"
@@ -1189,6 +1190,7 @@ GLCanvas3D::GLCanvas3D(wxGLCanvas* canvas, Bed3D &bed)
 #endif // ENABLE_RETINA_GL
     }
     m_timer_set_color.Bind(wxEVT_TIMER, &GLCanvas3D::on_set_color_timer, this);
+    m_filament_highlight_timer.Bind(wxEVT_TIMER, &GLCanvas3D::on_filament_highlight_timer, this);
     load_arrange_settings();
 
     m_selection.set_volumes(&m_volumes.volumes);
@@ -1831,6 +1833,22 @@ void GLCanvas3D::update_volumes_colors_by_extruder()
 {
     if (m_config != nullptr)
         m_volumes.update_colors_by_extruder(m_config);
+}
+
+void GLCanvas3D::highlight_filament_usage(int filament_id)
+{
+    if (filament_id <= 0 || m_canvas_type != ECanvasType::CanvasView3D)
+        return;
+
+    m_filament_highlight_timer.Stop();
+    m_highlighted_filament_id    = filament_id;
+    m_filament_highlight_ticks   = 0;
+    m_filament_highlight_visible = true;
+    m_volumes.set_highlighted_filament(filament_id);
+    set_as_dirty();
+    request_extra_frame();
+    wxWakeUpIdle();
+    m_filament_highlight_timer.Start(140, wxTIMER_CONTINUOUS);
 }
 
 bool GLCanvas3D::is_collapse_toolbar_on_left() const
@@ -2776,12 +2794,24 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
                 const Print* print = m_process != nullptr ? m_process->fff_print() : nullptr;
                 if (print == nullptr)
                     continue;
-                const auto& wipe_tower_data = print->wipe_tower_data(filaments_count);
+                // Every plate owns its tower, so prefer that plate's own sliced dimensions. A plate that
+                // has not been sliced has no config applied to its Print, so fall back to the active
+                // plate's estimate rather than reading defaults out of an empty one.
+                const Print* plate_print = part_plate->fff_print();
+                const Print* size_print  = (plate_print != nullptr && plate_print->is_step_done(psWipeTower)) ? plate_print : print;
+                const auto& wipe_tower_data = size_print->wipe_tower_data(filaments_count);
                 float brim_width = wipe_tower_data.brim_width;
+                // Not prime_tower_width: a rib wall squares the tower up, so it is usually wider than that.
+                float tower_width = wipe_tower_data.width > 0.f ? wipe_tower_data.width : w;
                 const DynamicPrintConfig &print_cfg   = wxGetApp().preset_bundle->prints.get_edited_preset().config;
-                Vec3d wipe_tower_size = ppl.get_plate(plate_id)->estimate_wipe_tower_size(print_cfg, w, wipe_tower_data.depth);
+                Vec3d wipe_tower_size = ppl.get_plate(plate_id)->estimate_wipe_tower_size(print_cfg, tower_width, wipe_tower_data.depth);
 
-                const float   margin     = WIPE_TOWER_MARGIN + tower_brim_width;
+                // The rib wall runs diagonally out past the tower corners and the brim wraps around
+                // that, so both have to be reserved here. Reserving only the brim leaves the first
+                // layer hanging off the plate and the G-code fails the bed check after slicing.
+                const float   wall_reach = WipeTower2::get_wall_extra_footprint(size_print->config(),
+                                                                                (float) wipe_tower_size(0), (float) wipe_tower_size(1));
+                const float   margin     = WIPE_TOWER_MARGIN + tower_brim_width + wall_reach;
                 BoundingBoxf3 plate_bbox = wxGetApp().plater()->get_partplate_list().get_plate(plate_id)->get_bounding_box();
                 coordf_t plate_bbox_x_max_local_coord = plate_bbox.max(0) - plate_origin(0);
                 coordf_t plate_bbox_y_max_local_coord = plate_bbox.max(1) - plate_origin(1);
@@ -3899,6 +3929,24 @@ void GLCanvas3D::on_set_color_timer(wxTimerEvent& evt)
         obj_list->set_extruder_for_selected_items(ordered_filament_ids.empty() ? 1 : int(ordered_filament_ids.front()));
     }
     m_timer_set_color.Stop();
+}
+
+void GLCanvas3D::on_filament_highlight_timer(wxTimerEvent&)
+{
+    ++m_filament_highlight_ticks;
+    m_filament_highlight_visible = !m_filament_highlight_visible;
+
+    // Seven transitions produce four clear flashes over approximately one second.
+    if (m_filament_highlight_ticks >= 7) {
+        m_filament_highlight_timer.Stop();
+        m_highlighted_filament_id    = 0;
+        m_filament_highlight_visible = false;
+    }
+
+    m_volumes.set_highlighted_filament(m_filament_highlight_visible ? m_highlighted_filament_id : 0);
+    set_as_dirty();
+    request_extra_frame();
+    wxWakeUpIdle();
 }
 
 
@@ -9800,6 +9848,58 @@ void GLCanvas3D::_set_warning_notification_if_needed(EWarning warning)
     _set_warning_notification(warning, show);
 }
 
+// Offers a one click repair for whatever the sliced G-code left hanging off the plate. Kept out of
+// GLCanvas3D so the header does not have to reach for NotificationManager, which includes it back.
+static NotificationManager::SlicingErrorFix build_toolpath_outside_fix(GCodeViewer::EOutsideSource source)
+{
+    NotificationManager::SlicingErrorFix fix;
+    if (!wxGetApp().is_editor())
+        return fix;
+
+    // The model must not be touched while the notification is being drawn, so every action below
+    // hands the repair to the Plater and lets it run on the next event loop iteration.
+    switch (source) {
+    case GCodeViewer::EOutsideSource::WipeTower:
+        fix.hypertext = _u8L("Move the prime tower onto the plate and slice again");
+        fix.action    = [](wxEvtHandler *) {
+            wxQueueEvent(wxGetApp().plater(), new Event<ToolpathOutsideFix>(EVT_FIX_TOOLPATH_OUTSIDE,
+                                                                           ToolpathOutsideFix{ToolpathOutsideFix::Target::WipeTower, 0}));
+            return true;
+        };
+        break;
+    case GCodeViewer::EOutsideSource::Object: {
+        // Only offer to move an object when the plate holds exactly one, so that "the offending
+        // object" is unambiguous - the G-code moves carry no object identity to narrow it down.
+        PartPlate *plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+        if (plate == nullptr)
+            break;
+        const ModelObjectPtrs &objects = wxGetApp().model().objects;
+        const ModelObject     *offender = nullptr;
+        for (int obj_idx = 0; obj_idx < int(objects.size()); ++obj_idx) {
+            if (!plate->contain_instance(obj_idx, 0))
+                continue;
+            if (offender != nullptr)
+                return fix; // more than one candidate, do not guess
+            offender = objects[obj_idx];
+        }
+        if (offender == nullptr)
+            break;
+        const size_t object_id = offender->id().id;
+        fix.hypertext          = format(_u8L("Move %1% to the middle of the plate and slice again"), offender->name);
+        fix.action             = [object_id](wxEvtHandler *) {
+            wxQueueEvent(wxGetApp().plater(), new Event<ToolpathOutsideFix>(EVT_FIX_TOOLPATH_OUTSIDE,
+                                                                           ToolpathOutsideFix{ToolpathOutsideFix::Target::Object, object_id}));
+            return true;
+        };
+        break;
+    }
+    case GCodeViewer::EOutsideSource::None:
+    default:
+        break;
+    }
+    return fix;
+}
+
 void GLCanvas3D::_set_warning_notification(EWarning warning, bool state)
 {
     enum ErrorType{
@@ -9811,6 +9911,7 @@ void GLCanvas3D::_set_warning_notification(EWarning warning, bool state)
     std::string text;
     ErrorType error = ErrorType::PLATER_WARNING;
     const ModelObject* conflictObj=nullptr;
+    NotificationManager::SlicingErrorFix fix;
     switch (warning) {
     case EWarning::GCodeConflict: {
         static std::string prevConflictText;
@@ -9831,7 +9932,12 @@ void GLCanvas3D::_set_warning_notification(EWarning warning, bool state)
     }
     case EWarning::ObjectOutside:      text = _u8L("An object is laid over the plate boundaries."); break;
     case EWarning::ToolHeightOutside:  text = _u8L("A G-code path goes beyond the max print height."); error = ErrorType::SLICING_ERROR; break;
-    case EWarning::ToolpathOutside:    text = _u8L("A G-code path goes beyond the plate boundaries."); error = ErrorType::SLICING_ERROR; break;
+    case EWarning::ToolpathOutside:
+        text  = _u8L("A G-code path goes beyond the plate boundaries.");
+        error = ErrorType::SLICING_ERROR;
+        if (state)
+            fix = build_toolpath_outside_fix(m_gcode_viewer.get_outside_source());
+        break;
     // BBS: remove _u8L() for SLA
     case EWarning::SlaSupportsOutside: text = ("SLA supports outside the print area were detected."); error = ErrorType::PLATER_ERROR; break;
     case EWarning::SomethingNotShown:  text = _u8L("Only the object being edited is visible."); break;
@@ -9880,7 +9986,8 @@ void GLCanvas3D::_set_warning_notification(EWarning warning, bool state)
         break;
     case SLICING_ERROR:
         if (state)
-            notification_manager.push_slicing_error_notification(text, conflictObj ? std::vector<ModelObject const*>{conflictObj} : std::vector<ModelObject const*>{});
+            notification_manager.push_slicing_error_notification(text, conflictObj ? std::vector<ModelObject const*>{conflictObj} : std::vector<ModelObject const*>{},
+                                                                 0., std::move(fix));
         else
             notification_manager.close_slicing_error_notification(text);
         break;

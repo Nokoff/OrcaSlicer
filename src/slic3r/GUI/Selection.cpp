@@ -9,6 +9,7 @@
 #include "Gizmos/GLGizmoBase.hpp"
 #include "Camera.hpp"
 #include "Plater.hpp"
+#include "PartPlate.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
 
 #include "libslic3r/LocalesUtils.hpp"
@@ -1241,7 +1242,12 @@ void Selection::translate(const Vec3d &displacement, TransformationType transfor
                 Vec3d         tower_size          = v.bounding_box().size();
                 Vec3d         tower_origin        = m_cache.volumes_data[i].get_volume_position();
                 Vec3d         actual_displacement = displacement;
-                const double  margin              = WIPE_TOWER_MARGIN;
+                // The rendered tower is the bare box: the brim and the ribs that run diagonally out
+                // past its corners both print outside it, so dragging has to keep room for them too.
+                const DynamicPrintConfig &print_cfg = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+                const ConfigOptionFloat  *brim_opt  = print_cfg.option<ConfigOptionFloat>("prime_tower_brim_width");
+                const double  margin              = WIPE_TOWER_MARGIN + (brim_opt ? brim_opt->value : 0.) +
+                                                    wipe_tower_wall_reach(print_cfg, (float) tower_size(0), (float) tower_size(1));
 
                 actual_displacement = (m_cache.volumes_data[i].get_instance_rotation_matrix() * m_cache.volumes_data[i].get_instance_scale_matrix() *
                                         m_cache.volumes_data[i].get_instance_mirror_matrix())

@@ -34,6 +34,7 @@
 #include "FilamentColorUtils.hpp"
 #include "NotificationManager.hpp"
 #include "FilamentColorDialog.hpp"
+#include "GLCanvas3D.hpp"
 #include "Plater.hpp"
 #include "MainFrame.hpp"
 #include "format.hpp"
@@ -908,9 +909,15 @@ PlaterPresetComboBox::PlaterPresetComboBox(wxWindow *parent, Preset::Type preset
     if (m_type == Preset::TYPE_FILAMENT) {
         clr_picker = new wxBitmapButton(parent, wxID_ANY, {}, wxDefaultPosition, wxSize(FromDIP(20), FromDIP(20)), wxBU_EXACTFIT | wxBU_AUTODRAW | wxBORDER_NONE);
         clr_picker->SetBitmapMargins(0, 0);
-        clr_picker->SetToolTip(_L("Click to select filament color"));
+        clr_picker->SetToolTip(_L("Click to select filament color. Right-click to highlight its use on the model."));
         clr_picker->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
             ChangeExtruderColor();
+        });
+        clr_picker->Bind(wxEVT_RIGHT_DOWN, [this](wxMouseEvent&) {
+            if (m_filament_idx >= 0) {
+                if (GLCanvas3D* canvas = wxGetApp().plater()->get_current_canvas3D(true))
+                    canvas->highlight_filament_usage(m_filament_idx + 1);
+            }
         });
     }
     else {

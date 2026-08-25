@@ -521,6 +521,10 @@ private:
     bool m_in_render;
     wxTimer m_timer;
     wxTimer m_timer_set_color;
+    wxTimer m_filament_highlight_timer;
+    int     m_filament_highlight_ticks{ 0 };
+    int     m_highlighted_filament_id{ 0 };
+    bool    m_filament_highlight_visible{ false };
     LayersEditing m_layers_editing;
     Mouse m_mouse;
     GLGizmosManager m_gizmos;
@@ -872,6 +876,7 @@ public:
     float get_collapse_toolbar_height() const;
 
     void update_volumes_colors_by_extruder();
+    void highlight_filament_usage(int filament_id);
 
     bool is_dragging() const { return m_gizmos.is_dragging() || m_moving; }
 
@@ -967,6 +972,7 @@ public:
     void on_timer(wxTimerEvent& evt);
     void on_render_timer(wxTimerEvent& evt);
     void on_set_color_timer(wxTimerEvent& evt);
+    void on_filament_highlight_timer(wxTimerEvent& evt);
     void on_mouse(wxMouseEvent& evt);
     void on_gesture(wxGestureEvent& evt);
     void on_paint(wxPaintEvent& evt);

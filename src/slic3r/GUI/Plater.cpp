@@ -354,6 +354,7 @@ wxDEFINE_EVENT(EVT_PUBLISH_FINISHED,                wxCommandEvent);
 //BBS: repair model
 wxDEFINE_EVENT(EVT_REPAIR_MODEL,                    wxCommandEvent);
 wxDEFINE_EVENT(EVT_FIX_EMPTY_FIRST_LAYER,           Event<EmptyFirstLayerFix>);
+wxDEFINE_EVENT(EVT_FIX_TOOLPATH_OUTSIDE,            Event<ToolpathOutsideFix>);
 wxDEFINE_EVENT(EVT_FILAMENT_COLOR_CHANGED,          wxCommandEvent);
 wxDEFINE_EVENT(EVT_INSTALL_PLUGIN_NETWORKING,       wxCommandEvent);
 wxDEFINE_EVENT(EVT_UPDATE_PLUGINS_WHEN_LAUNCH,       wxCommandEvent);
@@ -9572,6 +9573,7 @@ struct Plater::priv
     //BBS: add model repair
     void on_repair_model(wxCommandEvent &event);
     void on_fix_empty_first_layer(Event<EmptyFirstLayerFix> &event);
+    void on_fix_toolpath_outside(Event<ToolpathOutsideFix> &event);
     void on_filament_color_changed(wxCommandEvent &event);
     void show_install_plugin_hint(wxCommandEvent &event);
     void install_network_plugin(wxCommandEvent &event);
@@ -9837,6 +9839,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     this->q->Bind(EVT_PUBLISH, &priv::on_action_publish, this);
     this->q->Bind(EVT_REPAIR_MODEL, &priv::on_repair_model, this);
     this->q->Bind(EVT_FIX_EMPTY_FIRST_LAYER, &priv::on_fix_empty_first_layer, this);
+    this->q->Bind(EVT_FIX_TOOLPATH_OUTSIDE, &priv::on_fix_toolpath_outside, this);
     this->q->Bind(EVT_FILAMENT_COLOR_CHANGED, &priv::on_filament_color_changed, this);
     this->q->Bind(EVT_INSTALL_PLUGIN_NETWORKING, &priv::install_network_plugin, this);
     this->q->Bind(EVT_INSTALL_PLUGIN_HINT, &priv::show_install_plugin_hint, this);
@@ -14988,6 +14991,82 @@ void Plater::priv::on_fix_empty_first_layer(Event<EmptyFirstLayerFix> &event)
     if (GLCanvas3D *canvas = q->canvas3D())
         canvas->reload_scene(true, true);
     wxGetApp().obj_list()->update_info_items(static_cast<size_t>(it - model.objects.begin()));
+    update((unsigned int) UpdateParams::FORCE_BACKGROUND_PROCESSING_UPDATE);
+}
+
+void Plater::priv::on_fix_toolpath_outside(Event<ToolpathOutsideFix> &event)
+{
+    PartPlateList &ppl   = q->get_partplate_list();
+    PartPlate     *plate = ppl.get_curr_plate();
+    if (plate == nullptr)
+        return;
+
+    const BoundingBoxf3 plate_bbox = plate->get_bounding_box();
+
+    if (event.data.target == ToolpathOutsideFix::Target::Object) {
+        const ObjectID id(event.data.object_id);
+        auto           it = std::find_if(model.objects.begin(), model.objects.end(),
+                                         [&id](const ModelObject *o) { return o->id() == id; });
+        if (it == model.objects.end())
+            // The object is gone, the user edited the plate after the error was raised.
+            return;
+
+        Plater::TakeSnapshot snapshot(q, "Move object onto the plate");
+        Vec3d                shift = plate_bbox.center() - (*it)->instance_bounding_box(0).center();
+        shift.z()                  = 0.;
+        (*it)->translate_instances(shift);
+
+        if (GLCanvas3D *canvas = q->canvas3D())
+            canvas->reload_scene(true, true);
+        wxGetApp().obj_list()->update_info_items(static_cast<size_t>(it - model.objects.begin()));
+        update((unsigned int) UpdateParams::FORCE_BACKGROUND_PROCESSING_UPDATE);
+        return;
+    }
+
+    DynamicPrintConfig  &proj_cfg = wxGetApp().preset_bundle->project_config;
+    ConfigOptionFloats *tower_x  = proj_cfg.option<ConfigOptionFloats>("wipe_tower_x");
+    ConfigOptionFloats *tower_y  = proj_cfg.option<ConfigOptionFloats>("wipe_tower_y");
+    if (tower_x == nullptr || tower_y == nullptr)
+        return;
+
+    const int                 plate_idx = ppl.get_curr_plate_index();
+    const DynamicPrintConfig &print_cfg = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+
+    // Size the tower from what was actually sliced when that is available - a rib wall squares the
+    // tower up, so prime_tower_width on its own would understate it.
+    const Print *print = plate->fff_print();
+    double       width = print_cfg.opt_float("prime_tower_width");
+    double       depth = print_cfg.opt_float("prime_volume");
+    if (print != nullptr && print->is_step_done(psWipeTower)) {
+        const WipeTowerData &data = print->wipe_tower_data();
+        if (data.width > 0.f)
+            width = data.width;
+        if (data.depth > 0.f)
+            depth = data.depth;
+    }
+    const Vec3d  size = plate->estimate_wipe_tower_size(print_cfg, width, depth);
+    const double margin = WIPE_TOWER_MARGIN + print_cfg.opt_float("prime_tower_brim_width") +
+                          wipe_tower_wall_reach(print_cfg, (float) size(0), (float) size(1));
+
+    // Plate local coordinates, matching how wipe_tower_x/y are stored.
+    const Vec3d  plate_origin = plate->get_origin();
+    const double max_x        = plate_bbox.max(0) - plate_origin(0) - size(0) - margin;
+    const double max_y        = plate_bbox.max(1) - plate_origin(1) - size(1) - margin;
+
+    // Nudge, do not recentre: the middle of the plate is where the model is. If the tower is too big
+    // to fit at all, max_* falls below margin and it ends up flush against the near edge, which at
+    // least makes the real problem visible instead of hiding it off the plate.
+    const double new_x = std::clamp(tower_x->get_at(plate_idx), margin, std::max(margin, max_x));
+    const double new_y = std::clamp(tower_y->get_at(plate_idx), margin, std::max(margin, max_y));
+
+    Plater::TakeSnapshot snapshot(q, "Move the prime tower onto the plate");
+    ConfigOptionFloat    new_x_opt(new_x);
+    ConfigOptionFloat    new_y_opt(new_y);
+    tower_x->set_at(&new_x_opt, plate_idx, 0);
+    tower_y->set_at(&new_y_opt, plate_idx, 0);
+
+    if (GLCanvas3D *canvas = q->canvas3D())
+        canvas->reload_scene(true, true);
     update((unsigned int) UpdateParams::FORCE_BACKGROUND_PROCESSING_UPDATE);
 }
 

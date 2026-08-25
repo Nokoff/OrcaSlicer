@@ -102,6 +102,19 @@ struct EmptyFirstLayerFix {
     double sink_mm   { 0. };
 };
 wxDECLARE_EVENT(EVT_FIX_EMPTY_FIRST_LAYER, Event<EmptyFirstLayerFix>);
+// Payload of EVT_FIX_TOOLPATH_OUTSIDE: what to move back onto the plate after the sliced G-code
+// turned out to reach past its boundaries.
+struct ToolpathOutsideFix {
+    enum class Target {
+        // Move the prime tower the shortest distance that fits its whole footprint on the plate.
+        WipeTower,
+        // Centre the object on the plate.
+        Object,
+    };
+    Target target    { Target::WipeTower };
+    size_t object_id { 0 }; // ModelObject id, only meaningful for Target::Object
+};
+wxDECLARE_EVENT(EVT_FIX_TOOLPATH_OUTSIDE, Event<ToolpathOutsideFix>);
 wxDECLARE_EVENT(EVT_FILAMENT_COLOR_CHANGED,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_INSTALL_PLUGIN_NETWORKING,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_INSTALL_PLUGIN_HINT,        wxCommandEvent);

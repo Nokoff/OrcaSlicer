@@ -786,6 +786,17 @@ private:
     std::vector<CustomGCode::Item> m_custom_gcode_per_print_z;
 
     bool m_contained_in_bed{ true };
+public:
+    // What the bed containment check found sticking out, so the warning can offer to move it back.
+    enum class EOutsideSource
+    {
+        None,
+        WipeTower,
+        Object,
+    };
+
+private:
+    EOutsideSource m_outside_source{ EOutsideSource::None };
 mutable bool m_no_render_path { false };
     bool m_is_dark = false;
 
@@ -846,6 +857,7 @@ public:
     void update_marker_curr_move();
 
     bool is_contained_in_bed() const { return m_contained_in_bed; }
+    EOutsideSource get_outside_source() const { return m_outside_source; }
     //BBS: add only gcode mode
     bool is_only_gcode_in_preview() const { return m_only_gcode_in_preview; }
 

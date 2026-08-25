@@ -1235,6 +1235,7 @@ void GCodeViewer::reset()
     m_statistics.reset_all();
 #endif // ENABLE_GCODE_VIEWER_STATISTICS
     m_contained_in_bed = true;
+    m_outside_source   = EOutsideSource::None;
 }
 
 //BBS: GUI refactor: add canvas width and height
@@ -2348,6 +2349,10 @@ void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const
 
     //BBS: use convex_hull for toolpath outside check
     Points pts;
+    // Kept apart from pts so that, when something does escape the plate, the warning can say whether
+    // it was the prime tower or an object and offer the matching fix.
+    Points wipe_tower_pts;
+    Points object_pts;
 
     // extract approximate paths bounding box from result
     //BBS: add only gcode mode
@@ -2362,6 +2367,7 @@ void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const
                 m_paths_bounding_box.merge(move.position.cast<double>());
                 //BBS: use convex_hull for toolpath outside check
                 pts.emplace_back(Point(scale_(move.position.x()), scale_(move.position.y())));
+                (move.extrusion_role == erWipeTower ? wipe_tower_pts : object_pts).emplace_back(pts.back());
             }
         //}
     }
@@ -2382,6 +2388,7 @@ void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const
                     m_paths_bounding_box.merge(move.interpolation_points[i].cast<double>());
                     //BBS: use convex_hull for toolpath outside check
                     pts.emplace_back(Point(scale_(move.interpolation_points[i].x()), scale_(move.interpolation_points[i].y())));
+                    (move.extrusion_role == erWipeTower ? wipe_tower_pts : object_pts).emplace_back(pts.back());
                 }
         //}
     }
@@ -2397,6 +2404,21 @@ void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const
     {
         //BBS: use convex_hull for toolpath outside check
         m_contained_in_bed = build_volume.all_paths_inside(gcode_result, m_paths_bounding_box);
+        m_outside_source   = EOutsideSource::None;
+        if (!m_contained_in_bed) {
+            // Name the offender so the warning can offer to move it back. The prime tower is the
+            // usual one: unlike an object it is placed by the slicer, so the user has no obvious way
+            // to see it is off the plate until the G-code fails this check.
+            const Polygon &bed = build_volume.polygon();
+            auto escapes = [&bed](const Points &points) {
+                return !bed.points.empty() &&
+                       std::any_of(points.begin(), points.end(), [&bed](const Point &p) { return !bed.contains(p); });
+            };
+            if (escapes(wipe_tower_pts))
+                m_outside_source = EOutsideSource::WipeTower;
+            else if (escapes(object_pts))
+                m_outside_source = EOutsideSource::Object;
+        }
         if (m_contained_in_bed) {
             //PartPlateList& partplate_list = wxGetApp().plater()->get_partplate_list();
             //PartPlate* plate = partplate_list.get_curr_plate();

@@ -401,7 +401,7 @@ void GLVolume::set_range(double min_z, double max_z)
     }
 }
 
-void GLVolume::render()
+void GLVolume::render(int highlighted_filament_id)
 {
     if (!is_active)
         return;
@@ -413,11 +413,11 @@ void GLVolume::render()
     ModelObjectPtrs&       model_objects = GUI::wxGetApp().model().objects;
     std::vector<ColorRGBA> colors        = get_extruders_colors();
 
-    simple_render(shader, model_objects, colors);
+    simple_render(shader, model_objects, colors, false, highlighted_filament_id);
 }
 
 // BBS: add outline related logic
-void GLVolume::render_with_outline(const GUI::Size& cnv_size)
+void GLVolume::render_with_outline(const GUI::Size& cnv_size, int highlighted_filament_id)
 {
     if (!is_active)
         return;
@@ -432,7 +432,7 @@ void GLVolume::render_with_outline(const GUI::Size& cnv_size)
     const GUI::OpenGLManager::EFramebufferType framebuffers_type = GUI::OpenGLManager::get_framebuffers_type();
     if (framebuffers_type == GUI::OpenGLManager::EFramebufferType::Unknown) {
         // No supported, degrade to normal rendering
-        simple_render(shader, model_objects, colors);
+        simple_render(shader, model_objects, colors, false, highlighted_filament_id);
         return;
     }
 
@@ -488,7 +488,7 @@ void GLVolume::render_with_outline(const GUI::Size& cnv_size)
     glActiveTexture(GL_TEXTURE0);
     glsafe(::glBindTexture(GL_TEXTURE_2D, depth_tex));
     shader->set_uniform("depth_tex", 0);
-    simple_render(shader, model_objects, colors);
+    simple_render(shader, model_objects, colors, false, highlighted_filament_id);
 
     // Some clean up to do
     glsafe(::glBindTexture(GL_TEXTURE_2D, 0));
@@ -510,7 +510,8 @@ void GLVolume::render_with_outline(const GUI::Size& cnv_size)
 void GLVolume::simple_render(GLShaderProgram*        shader,
                              ModelObjectPtrs&        model_objects,
                              std::vector<ColorRGBA>& extruder_colors,
-                             bool                    ban_light)
+                             bool                    ban_light,
+                             int                     highlighted_filament_id)
 {
     if (this->is_left_handed())
         glFrontFace(GL_CW);
@@ -549,6 +550,14 @@ void GLVolume::simple_render(GLShaderProgram*        shader,
         if (force_native_color && render_color.is_transparent()) {
             for (auto& extruder_color : extruder_colors)
                 extruder_color.a(render_color.a());
+        }
+
+        if (highlighted_filament_id > 0 && highlighted_filament_id <= int(extruder_colors.size())) {
+            for (int filament_id = 1; filament_id <= int(extruder_colors.size()); ++filament_id) {
+                const float alpha = extruder_colors[filament_id - 1].a();
+                extruder_colors[filament_id - 1] = filament_id == highlighted_filament_id ?
+                    ColorRGBA(1.0f, 0.85f, 0.05f, alpha) : ColorRGBA(0.06f, 0.06f, 0.06f, alpha);
+            }
         }
 
         for (int idx = 0; idx < mmuseg_models.size(); idx++) {
@@ -638,7 +647,7 @@ void GLVolume::render_sinking_contours() { m_sinking_contours.render(); }
 
 GLWipeTowerVolume::GLWipeTowerVolume(const std::vector<ColorRGBA>& colors) : GLVolume() { m_colors = colors; }
 
-void GLWipeTowerVolume::render()
+void GLWipeTowerVolume::render(int /* highlighted_filament_id */)
 {
     if (!is_active)
         return;
@@ -945,6 +954,16 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType      type,
             volume.first->force_transparent = false;
 #endif // ENABLE_MODIFIERS_ALWAYS_TRANSPARENT
 
+        const int highlighted_filament_id = !volume.first->is_modifier && !volume.first->is_wipe_tower && volume.first->volume_idx() >= 0 ?
+                                                m_highlighted_filament_id : 0;
+        if (highlighted_filament_id > 0) {
+            const float alpha              = volume.first->render_color.a();
+            const int   volume_filament_id = volume.first->extruder_id > 0 ? volume.first->extruder_id : 1;
+            volume.first->set_render_color(volume_filament_id == highlighted_filament_id ?
+                                               ColorRGBA(1.0f, 0.85f, 0.05f, alpha) :
+                                               ColorRGBA(0.06f, 0.06f, 0.06f, alpha));
+        }
+
         // render sinking contours of non-hovered volumes
         shader->stop_using();
         if (sink_shader != nullptr) {
@@ -1016,9 +1035,9 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType      type,
         shader->set_uniform("view_normal_matrix", view_normal_matrix);
         // BBS: add outline related logic
         if (volume.first->selected && GUI::wxGetApp().show_outline())
-            volume.first->render_with_outline(cnv_size);
+            volume.first->render_with_outline(cnv_size, highlighted_filament_id);
         else
-            volume.first->render();
+            volume.first->render(highlighted_filament_id);
 
 #if ENABLE_ENVIRONMENT_MAP
         if (use_environment_texture)

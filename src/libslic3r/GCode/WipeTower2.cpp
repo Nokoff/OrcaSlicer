@@ -2397,6 +2397,31 @@ std::pair<double, double> WipeTower2::get_wipe_tower_cone_base(double width, dou
     return std::make_pair(R, support_scale);
 }
 
+// Static method to get how far the outer wall reaches past the nominal width x depth box.
+float WipeTower2::get_wall_extra_footprint(int wall_type, float rib_width, float extra_rib_length, float width, float depth)
+{
+    if (wall_type != int(wtwRib) || width <= 0.f || depth <= 0.f)
+        return 0.f;
+
+    // Mirrors what generate_rib_polygon() lays down on the bottom layer, which is where the ribs
+    // reach furthest out: two rib_width-wide rectangles swept along the box diagonals, each diagonal
+    // first extended by half of wipe_tower_extra_rib_length at both ends.
+    rib_width            = std::min(rib_width, std::min(depth, width) / 2.f);
+    const float diagonal = std::hypot(width, depth);
+    const float extend   = std::max(0.f, extra_rib_length) / 2.f;
+    // Unit vector along the diagonal; the perpendicular that carries the rib's half width is the
+    // same pair of components swapped, so one expression bounds the reach on both axes.
+    const float ux = width / diagonal;
+    const float uy = depth / diagonal;
+    return std::max(extend * ux + rib_width / 2.f * uy, extend * uy + rib_width / 2.f * ux);
+}
+
+float WipeTower2::get_wall_extra_footprint(const PrintConfig& config, float width, float depth)
+{
+    return get_wall_extra_footprint(int(config.wipe_tower_wall_type.value), float(config.wipe_tower_rib_width.value),
+                                    float(config.wipe_tower_extra_rib_length.value), width, depth);
+}
+
 // Static method to extract wipe_volumes[from][to] from the configuration.
 std::vector<std::vector<float>> WipeTower2::extract_wipe_volumes(const PrintConfig& config)
 {

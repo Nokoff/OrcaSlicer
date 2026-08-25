@@ -1438,11 +1438,13 @@ static StringObjectException layered_print_cleareance_valid(const Print &print, 
     const Vec3d         plate_origin = print.get_plate_origin();
     float               x            = config.wipe_tower_x.get_at(plate_index) + plate_origin(0);
     float               y            = config.wipe_tower_y.get_at(plate_index) + plate_origin(1);
-    float               width        = config.prime_tower_width.value;
     float               a            = config.wipe_tower_rotation_angle.value;
     //float               v            = config.wiping_volume.value;
 
-    float        depth                     = print.wipe_tower_data(filaments_count).depth;
+    const WipeTowerData &wipe_tower_data     = print.wipe_tower_data(filaments_count);
+    float                depth               = wipe_tower_data.depth;
+    // Not prime_tower_width: a rib wall squares the tower up and then reaches further still.
+    float                width               = wipe_tower_data.width > 0.f ? wipe_tower_data.width : config.prime_tower_width.value;
     //float        brim_width                = print.wipe_tower_data(filaments_count).brim_width;
 
     Polygons convex_hulls_temp;
@@ -2962,10 +2964,16 @@ Points Print::first_layer_wipe_tower_corners(bool check_wipe_tower_existance) co
     if (check_wipe_tower_existance && (!has_wipe_tower() || m_wipe_tower_data.tool_changes.empty()))
         return corners;
     {
-        double width = m_config.prime_tower_width + 2*m_wipe_tower_data.brim_width;
-        double depth = m_wipe_tower_data.depth + 2*m_wipe_tower_data.brim_width;
-        Vec2d pt0(-m_wipe_tower_data.brim_width, -m_wipe_tower_data.brim_width);
-        
+        // The tower box is not prime_tower_width wide once a rib wall squares it up, and the ribs
+        // themselves stick out past its corners. Both have to be inside the reported footprint,
+        // otherwise the first layer escapes the plate without anything noticing.
+        const double tower_width = m_wipe_tower_data.width > 0.f ? m_wipe_tower_data.width : double(m_config.prime_tower_width);
+        const double reach       = m_wipe_tower_data.brim_width +
+                                   WipeTower2::get_wall_extra_footprint(m_config, float(tower_width), m_wipe_tower_data.depth);
+        double width = tower_width + 2*reach;
+        double depth = m_wipe_tower_data.depth + 2*reach;
+        Vec2d pt0(-reach, -reach);
+
         // First the corners.
         std::vector<Vec2d> pts = { pt0,
                                    Vec2d(pt0.x()+width, pt0.y()),
@@ -2975,8 +2983,8 @@ Points Print::first_layer_wipe_tower_corners(bool check_wipe_tower_existance) co
 
         // Now the stabilization cone.
         Vec2d center = (pts[0] + pts[2])/2.;
-        const auto [cone_R, cone_x_scale] = WipeTower2::get_wipe_tower_cone_base(m_config.prime_tower_width, m_wipe_tower_data.height, m_wipe_tower_data.depth, m_config.wipe_tower_cone_angle);
-        double r = cone_R + m_wipe_tower_data.brim_width;
+        const auto [cone_R, cone_x_scale] = WipeTower2::get_wipe_tower_cone_base(tower_width, m_wipe_tower_data.height, m_wipe_tower_data.depth, m_config.wipe_tower_cone_angle);
+        double r = cone_R + reach;
         for (double alpha = 0.; alpha<2*M_PI; alpha += M_PI/20.)
             pts.emplace_back(center + r*Vec2d(std::cos(alpha)/cone_x_scale, std::sin(alpha)));
 
@@ -3124,6 +3132,15 @@ const WipeTowerData &Print::wipe_tower_data(size_t filaments_cnt) const
             }
         }
         const_cast<Print *>(this)->m_wipe_tower_data.brim_width = m_config.prime_tower_brim_width;
+        const_cast<Print *>(this)->m_wipe_tower_data.width      = width;
+        if (m_config.wipe_tower_wall_type.value == wtwRib) {
+            // A rib wall squares the tower up over the same footprint area, so the estimate has to
+            // square up too - otherwise placement reserves a 30 mm wide strip for a tower that ends
+            // up far wider than that.
+            const double side = std::sqrt(std::abs(m_wipe_tower_data.depth * width));
+            const_cast<Print *>(this)->m_wipe_tower_data.width = float(side);
+            const_cast<Print *>(this)->m_wipe_tower_data.depth = float(side);
+        }
     }
 
     return m_wipe_tower_data;
@@ -3273,6 +3290,7 @@ void Print::_make_wipe_tower()
         m_wipe_tower_data.tool_changes.reserve(m_wipe_tower_data.tool_ordering.layer_tools().size());
         wipe_tower.generate(m_wipe_tower_data.tool_changes);
         m_wipe_tower_data.depth      = wipe_tower.get_depth();
+        m_wipe_tower_data.width      = m_config.prime_tower_width;
         m_wipe_tower_data.brim_width = wipe_tower.get_brim_width();
 
         // Unload the current filament over the purge tower.
@@ -3408,6 +3426,8 @@ void Print::_make_wipe_tower()
                                  << " nominal_layers=" << m_wipe_tower_data.tool_changes.size()
                                  << " local_z_layers=" << m_wipe_tower_data.local_z_tool_changes.size();
         m_wipe_tower_data.depth             = wipe_tower.get_depth();
+        // A rib wall squares the tower up, so the generated width is not prime_tower_width.
+        m_wipe_tower_data.width             = wipe_tower.width();
         m_wipe_tower_data.z_and_depth_pairs = wipe_tower.get_z_and_depth_pairs();
         m_wipe_tower_data.local_z_reserve_boxes = wipe_tower.get_local_z_reserve_boxes();
         m_wipe_tower_data.brim_width        = wipe_tower.get_brim_width();

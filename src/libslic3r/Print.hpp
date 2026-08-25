@@ -789,6 +789,9 @@ struct WipeTowerData
 
     // Depth of the wipe tower to pass to GLCanvas3D for exact bounding box:
     float                                                 depth;
+    // Width of the generated tower. A rib wall squares the tower up, so this is not
+    // prime_tower_width and placement checks must not assume it is.
+    float                                                 width;
     std::vector<std::pair<float, float>>                  z_and_depth_pairs;
     std::vector<std::vector<WipeTower::box_coordinates>>  local_z_reserve_boxes;
     float                                                 brim_width;
@@ -802,6 +805,7 @@ struct WipeTowerData
         used_filament.clear();
         number_of_toolchanges = -1;
         depth = 0.f;
+        width = 0.f;
         local_z_reserve_boxes.clear();
         brim_width = 0.f;
     }

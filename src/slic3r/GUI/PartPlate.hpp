@@ -74,6 +74,11 @@ class PartPlateList;
 
 using GCodeResult = GCodeProcessorResult;
 
+// How far the prime tower's outer wall reaches past its nominal width x depth box on every side.
+// A rib wall runs diagonally out beyond the box corners, so this has to be reserved on top of the
+// brim wherever the tower is placed or clamped against the plate.
+float wipe_tower_wall_reach(const DynamicPrintConfig &config, float width, float depth);
+
 class PartPlate : public ObjectBase
 {
 public:

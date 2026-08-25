@@ -22,6 +22,7 @@
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/Tesselate.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
+#include "libslic3r/GCode/WipeTower2.hpp"
 #include "libslic3r/Utils.hpp"
 
 #include "I18N.hpp"
@@ -1684,6 +1685,18 @@ std::vector<int> PartPlate::get_used_extruders()
 	return std::vector(used_extruders_set.begin(), used_extruders_set.end());
 }
 
+float wipe_tower_wall_reach(const DynamicPrintConfig &config, float width, float depth)
+{
+	auto wall_type_opt = config.option<ConfigOptionEnum<WipeTowerWallType>>("wipe_tower_wall_type");
+	if (wall_type_opt == nullptr)
+		return 0.f;
+	auto  rib_width_opt        = config.option<ConfigOptionFloat>("wipe_tower_rib_width");
+	auto  extra_rib_length_opt = config.option<ConfigOptionFloat>("wipe_tower_extra_rib_length");
+	float rib_width            = rib_width_opt ? (float) rib_width_opt->value : 0.f;
+	float extra_rib_length     = extra_rib_length_opt ? (float) extra_rib_length_opt->value : 0.f;
+	return WipeTower2::get_wall_extra_footprint((int) wall_type_opt->value, rib_width, extra_rib_length, width, depth);
+}
+
 Vec3d PartPlate::estimate_wipe_tower_size(const DynamicPrintConfig & config, const double w, const double d, int plate_extruder_size, bool use_global_objects) const
 {
 	Vec3d wipe_tower_size;
@@ -1755,6 +1768,16 @@ Vec3d PartPlate::estimate_wipe_tower_size(const DynamicPrintConfig & config, con
 		depth = std::max((double)min_wipe_tower_depth, depth);
 	}
 	wipe_tower_size(1) = depth;
+
+	// A rib wall squares the tower up over the same footprint area (see WipeTower2::generate()), so
+	// prime_tower_width is not what actually gets printed. Reporting the nominal width here would let
+	// placement reserve a narrow strip for a much wider tower.
+	auto wall_type_opt = config.option<ConfigOptionEnum<WipeTowerWallType>>("wipe_tower_wall_type");
+	if (wall_type_opt && wall_type_opt->value == wtwRib && depth > EPSILON && w > EPSILON) {
+		const double side  = std::sqrt(w * depth);
+		wipe_tower_size(0) = side;
+		wipe_tower_size(1) = side;
+	}
 	return wipe_tower_size;
 }
 
@@ -1769,7 +1792,11 @@ arrangement::ArrangePolygon PartPlate::estimate_wipe_tower_polygon(const Dynamic
     Vec3d wipe_tower_size = estimate_wipe_tower_size(config, w, v, plate_extruder_size, use_global_objects);
 	int plate_width=m_width, plate_depth=m_depth;
 	float depth = wipe_tower_size(1);
-	float margin = WIPE_TOWER_MARGIN + tower_brim_width, wp_brim_width = 0.f;
+	// A rib wall squares the tower up, so take the width back off the estimate instead of the config.
+	w = (float) wipe_tower_size(0);
+	// The ribs run diagonally out past the tower corners, beyond the brim reserved below.
+	const float wall_reach = wipe_tower_wall_reach(config, (float) wipe_tower_size(0), depth);
+	float margin = WIPE_TOWER_MARGIN + tower_brim_width + wall_reach, wp_brim_width = 0.f;
 	const ConfigOption* wipe_tower_brim_width_opt = config.option("prime_tower_brim_width");
 	if (wipe_tower_brim_width_opt) {
 		wp_brim_width = wipe_tower_brim_width_opt->getFloat();
@@ -1779,12 +1806,15 @@ arrangement::ArrangePolygon PartPlate::estimate_wipe_tower_polygon(const Dynamic
 	x = std::clamp(x, margin, (float)plate_width - w - margin - wp_brim_width);
 	y = std::clamp(y, margin, (float)plate_depth - depth - margin - wp_brim_width);
 
+	// Objects have to stay clear of the ribs as well as the brim, so the reserved polygon grows by both.
+	const float wp_reach = wp_brim_width + wall_reach;
+
 	arrangement::ArrangePolygon wipe_tower_ap;
 	Polygon ap({
-		{scaled(x - wp_brim_width), scaled(y - wp_brim_width)},
-		{scaled(x + w + wp_brim_width), scaled(y - wp_brim_width)},
-		{scaled(x + w + wp_brim_width), scaled(y + depth + wp_brim_width)},
-		{scaled(x - wp_brim_width), scaled(y + depth + wp_brim_width)}
+		{scaled(x - wp_reach), scaled(y - wp_reach)},
+		{scaled(x + w + wp_reach), scaled(y - wp_reach)},
+		{scaled(x + w + wp_reach), scaled(y + depth + wp_reach)},
+		{scaled(x - wp_reach), scaled(y + depth + wp_reach)}
 		});
 	wipe_tower_ap.bed_idx = plate_index;
 	wipe_tower_ap.setter = NULL; // do not move wipe tower

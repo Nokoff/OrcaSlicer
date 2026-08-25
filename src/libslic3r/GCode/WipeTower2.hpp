@@ -24,6 +24,11 @@ public:
     static const std::string never_skip_tag() { return "_GCODE_WIPE_TOWER_NEVER_SKIP_TAG"; }
 	static std::pair<double, double> get_wipe_tower_cone_base(double width, double height, double depth, double angle_deg);
 	static std::vector<std::vector<float>> extract_wipe_volumes(const PrintConfig& config);
+	// How far the outer wall reaches past the nominal width x depth box on every side. A rib wall runs
+	// diagonally out beyond the box corners, so the tower footprint is wider than prime_tower_width
+	// suggests; every placement check has to reserve this on top of the brim.
+	static float get_wall_extra_footprint(int wall_type, float rib_width, float extra_rib_length, float width, float depth);
+	static float get_wall_extra_footprint(const PrintConfig& config, float width, float depth);
 
     
     // Construct ToolChangeResult from current state of WipeTower2 and WipeTowerWriter2.

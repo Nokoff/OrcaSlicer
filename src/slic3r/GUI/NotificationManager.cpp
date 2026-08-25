@@ -1846,7 +1846,8 @@ void NotificationManager::close_validate_warning_notification(const std::string&
     close_notification_of_type_and_text(NotificationType::ValidateWarning, _u8L("WARNING:") + "\n" + text);
 }
 
-void NotificationManager::push_slicing_error_notification(const std::string &text, std::vector<ModelObject const *> objs, double suggested_sink)
+void NotificationManager::push_slicing_error_notification(const std::string &text, std::vector<ModelObject const *> objs, double suggested_sink,
+                                                          SlicingErrorFix fix)
 {
     std::vector<ObjectID> ids;
     for (auto optr : objs) {
@@ -1894,6 +1895,10 @@ void NotificationManager::push_slicing_error_notification(const std::string &tex
             return true;
         };
         link = format(_u8L("Sink %1% mm into the plate and slice again"), suggested_sink);
+    }
+    if (fix.valid()) {
+        callback = std::move(fix.action);
+        link     = std::move(fix.hypertext);
     }
     set_all_slicing_errors_gray(false);
 	push_notification_data({ NotificationType::SlicingError, NotificationLevel::ErrorNotificationLevel, 0,  _u8L("Error:") + "\n" + text, link, callback }, 0);

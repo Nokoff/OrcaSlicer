@@ -333,13 +333,14 @@ public:
 
     void                set_range(double low, double high);
 
-    virtual void        render();
+    virtual void        render(int highlighted_filament_id = 0);
 
     //BBS: add outline related logic and add virtual specifier
-    virtual void render_with_outline(const GUI::Size& cnv_size);
+    virtual void render_with_outline(const GUI::Size& cnv_size, int highlighted_filament_id = 0);
 
     //BBS: add simple render function for thumbnail
-    void simple_render(GLShaderProgram* shader, ModelObjectPtrs& model_objects, std::vector<ColorRGBA>& extruder_colors, bool ban_light =false);
+    void simple_render(GLShaderProgram* shader, ModelObjectPtrs& model_objects, std::vector<ColorRGBA>& extruder_colors,
+                       bool ban_light = false, int highlighted_filament_id = 0);
 
     void                set_bounding_boxes_as_dirty() {
         m_transformed_bounding_box.reset();
@@ -368,8 +369,8 @@ public:
 class GLWipeTowerVolume : public GLVolume {
 public:
     GLWipeTowerVolume(const std::vector<ColorRGBA>& colors);
-    void render() override;
-    void render_with_outline(const GUI::Size& cnv_size) override { render(); }
+    void render(int highlighted_filament_id = 0) override;
+    void render_with_outline(const GUI::Size& cnv_size, int highlighted_filament_id = 0) override { render(); }
 
     std::vector<GUI::GLModel> model_per_colors;
     bool                              IsTransparent();
@@ -432,6 +433,7 @@ private:
 
     Slope m_slope;
     bool m_show_sinking_contours = false;
+    int  m_highlighted_filament_id = 0;
 
 public:
     GLVolumePtrs volumes;
@@ -520,6 +522,7 @@ public:
     void set_slope_normal_z(float normal_z) { m_slope.normal_z = normal_z; }
     void set_default_slope_normal_z() { m_slope.normal_z = -::cos(Geometry::deg2rad(90.0f - 45.0f)); }
     void set_show_sinking_contours(bool show) { m_show_sinking_contours = show; }
+    void set_highlighted_filament(int filament_id) { m_highlighted_filament_id = filament_id; }
 
     // returns true if all the volumes are completely contained in the print volume
     // returns the containment state in the given out_state, if non-null
