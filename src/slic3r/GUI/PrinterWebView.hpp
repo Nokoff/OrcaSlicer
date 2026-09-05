@@ -55,7 +55,6 @@ private:
     wxWebView* m_browser;
     long m_zoomFactor;
     wxString m_apikey;
-    bool m_apikey_sent;
 
     // DECLARE_EVENT_TABLE()
 };

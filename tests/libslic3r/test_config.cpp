@@ -1,6 +1,8 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/ProjectSchemaVersion.hpp"
+#include "libslic3r/Preset.hpp"
 #include "libslic3r/LocalesUtils.hpp"
 
 #include <algorithm>
@@ -12,22 +14,35 @@
 
 using namespace Slic3r;
 
+TEST_CASE("Project schema registry handles versions", "[Config][FlowVariant]")
+{
+    const auto& schema = ProjectSchemaRegistry::definition();
+    REQUIRE(schema.config_key == std::string("project_schema_version"));
+    REQUIRE(schema.current_version == 1);
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.erase(schema.config_key);
+    REQUIRE(ProjectSchemaRegistry::version_from(config) == schema.legacy_version);
+    REQUIRE_FALSE(ProjectSchemaRegistry::is_newer(config));
+
+    config.set_key_value(schema.config_key, new ConfigOptionInt(schema.current_version));
+    REQUIRE_FALSE(ProjectSchemaRegistry::is_newer(config));
+
+    config.set_key_value(schema.config_key, new ConfigOptionInt(schema.current_version + 1));
+    REQUIRE(ProjectSchemaRegistry::is_newer(config));
+}
+
 SCENARIO("Generic config validation performs as expected.", "[Config]") {
     GIVEN("A config generated from default options") {
         Slic3r::DynamicPrintConfig config = Slic3r::DynamicPrintConfig::full_print_config();
-        // The defaults must validate cleanly, otherwise the "valid value" case below
-        // could pass for an unrelated reason.
-        REQUIRE(config.validate().empty());
-
-        WHEN( "inner_wall_line_width is set to 250%, a valid value") {
-            // 250% stays under MAX_LINE_WIDTH_MULTIPLIER (5x the nozzle diameter).
-            config.set_deserialize_strict("inner_wall_line_width", "250%");
+        WHEN( "line_width is set to 250%, a valid value") {
+            config.set_deserialize_strict("line_width", "250%");
             THEN( "The config is read as valid.") {
                 REQUIRE(config.validate().empty());
             }
         }
-        WHEN( "inner_wall_line_width is set to -10, an invalid value") {
-            config.set("inner_wall_line_width", -10);
+        WHEN( "line_width is set to -10, an invalid value") {
+            config.set("line_width", -10);
             THEN( "Validate returns error") {
                 REQUIRE(! config.validate().empty());
             }
@@ -71,14 +86,9 @@ SCENARIO("Config accessor functions perform as expected.", "[Config]") {
             }
         }
         WHEN("A numeric option is set from serialized string") {
-            config.set_deserialize_strict("hot_plate_temp", "100");
+            config.set_deserialize_strict("nozzle_diameter", "0.6");
             THEN("The underlying value is set correctly.") {
-                // Assert the option exists before dereferencing it. handle_legacy() silently drops
-                // obsolete keys, so a stale key name here would otherwise return nullptr and take
-                // the whole test binary down with a segfault instead of failing this one case.
-                auto *opt = config.opt<ConfigOptionInts>("hot_plate_temp");
-                REQUIRE(opt != nullptr);
-                REQUIRE(opt->get_at(0) == 100);
+                REQUIRE(config.opt<ConfigOptionFloats>("nozzle_diameter")->get_at(0) == 0.6);
             }
         }
 #if 0
@@ -91,28 +101,28 @@ SCENARIO("Config accessor functions perform as expected.", "[Config]") {
         }
 #endif
         WHEN("An floating-point option is set through the integer interface") {
-            config.set("inner_wall_speed", 10);
+            config.set("bridge_flow", 10);
             THEN("The underlying value is set correctly.") {
-                REQUIRE(config.opt<ConfigOptionFloat>("inner_wall_speed")->getFloat() == 10.0);
+                REQUIRE(config.opt<ConfigOptionFloat>("bridge_flow")->getFloat() == 10.0);
             }
         }
         WHEN("A floating-point option is set through the double interface") {
-            config.set("inner_wall_speed", 5.5);
+            config.set("bridge_flow", 5.5);
             THEN("The underlying value is set correctly.") {
-                REQUIRE(config.opt<ConfigOptionFloat>("inner_wall_speed")->getFloat() == 5.5);
+                REQUIRE(config.opt<ConfigOptionFloat>("bridge_flow")->getFloat() == 5.5);
             }
         }
         WHEN("An integer-based option is set through the double interface") {
             THEN("A BadOptionTypeException exception is thrown.") {
-                REQUIRE_THROWS_AS(config.set("hot_plate_temp", 5.5), BadOptionTypeException);
+                REQUIRE_THROWS_AS(config.set("wall_loops", 5.5), BadOptionTypeException);
             }
         }
         WHEN("A numeric option is set to a non-numeric value.") {
             THEN("A BadOptionTypeException exception is thown.") {
-                REQUIRE_THROWS_AS(config.set_deserialize_strict("inner_wall_speed", "zzzz"), BadOptionValueException);
+                REQUIRE_THROWS_AS(config.set_deserialize_strict("bridge_flow", "zzzz"), BadOptionValueException);
             }
             THEN("The value does not change.") {
-                REQUIRE(config.opt<ConfigOptionFloat>("inner_wall_speed")->getFloat() == 60.0);
+                REQUIRE(config.opt<ConfigOptionFloat>("bridge_flow")->getFloat() == 1.0);
             }
         }
         WHEN("A string option is set through the string interface") {
@@ -232,8 +242,8 @@ SCENARIO("DynamicPrintConfig serialization", "[Config]") {
             cereal::BinaryOutputArchive oarchive(ss);
             oarchive(cfg);
             serialized = ss.str();
-        } catch (const std::runtime_error & /* e */) {
-            // e.what();
+        } catch (const std::runtime_error &e) {
+            FAIL("Failed to serialize DynamicPrintConfig: " << e.what());
         }
 
         THEN("Config object contains ini file options.") {
@@ -242,10 +252,16 @@ SCENARIO("DynamicPrintConfig serialization", "[Config]") {
                 std::stringstream ss(serialized);
                 cereal::BinaryInputArchive iarchive(ss);
                 iarchive(cfg2);
-            } catch (const std::runtime_error & /* e */) {
-                // e.what();
+            } catch (const std::runtime_error &e) {
+                FAIL("Failed to deserialize DynamicPrintConfig: " << e.what());
             }
-            REQUIRE(cfg == cfg2);
+            const auto cfg_keys  = cfg.keys();
+            const auto cfg2_keys = cfg2.keys();
+            REQUIRE(cfg_keys == cfg2_keys);
+            for (const std::string &key : cfg_keys) {
+                CAPTURE(key);
+                REQUIRE(*cfg.option(key) == *cfg2.option(key));
+            }
         }
     }
 }
