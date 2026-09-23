@@ -90,6 +90,7 @@ public:
         Assembly,
         Simplify,
         BrimEars,
+        Smooth,
         //SlaSupports,
         // BBS
         //FaceRecognition,

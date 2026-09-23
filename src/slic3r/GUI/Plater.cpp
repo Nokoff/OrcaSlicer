@@ -17759,6 +17759,9 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
 
     const size_t active_snapshot_time = this->undo_redo_stack().active_snapshot_time();
     const bool undoing = it_snapshot->timestamp < active_snapshot_time;
+    BOOST_LOG_TRIVIAL(warning) << "[SmoothBrush] history_restore direction=" << (undoing ? "undo" : "redo")
+        << " from=" << active_snapshot_time << " to=" << it_snapshot->timestamp
+        << " target_is_smooth_stroke=" << (it_snapshot->name == _u8L("Smooth brush stroke"));
     const std::vector<UndoRedo::Snapshot>& snapshots = this->undo_redo_stack().snapshots();
     const auto it_active = std::lower_bound(snapshots.begin(), snapshots.end(), UndoRedo::Snapshot(active_snapshot_time));
 
