@@ -692,6 +692,7 @@ void WebViewPanel::OnScriptMessage(wxWebViewEvent& evt)
     // update login status
     if (m_LoginUpdateTimer == nullptr) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " Create Timer";
+        wxGetApp().on_flutter_wcp_received();
         m_LoginUpdateTimer = new wxTimer(this, LOGIN_INFO_UPDATE_TIMER_ID);
         m_LoginUpdateTimer->Start(2000);
     }
