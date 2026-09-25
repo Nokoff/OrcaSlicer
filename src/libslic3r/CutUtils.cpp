@@ -339,7 +339,7 @@ const ModelObjectPtrs& Cut::perform_with_plane()
         if (m_attributes.has(ModelObjectCutAttribute::KeepPaint)) {
             saved_paintings.emplace_back(volume->save_painting());
             if (saved_paintings.back())
-                saved_paintings.back()->mesh.transform(instance_matrix * volume->get_matrix(), true);
+                saved_paintings.back()->transform = instance_matrix * volume->get_matrix();
         }
 
         volume->reset_extra_facets();
@@ -427,40 +427,67 @@ static void distribute_modifiers_from_object(ModelObject* from_obj, const int in
 static void merge_solid_parts_inside_object(ModelObjectPtrs& objects)
 {
     for (ModelObject* mo : objects) {
-        TriangleMesh mesh;
-        // Merge all SolidPart but not Connectors
+        struct MergeGroup
+        {
+            const ModelVolume* source;
+            TriangleMesh       mesh;
+        };
+        std::vector<MergeGroup> groups;
+        const size_t            original_volume_count = mo->volumes.size();
+        // Parts with different filament or material assignments must stay
+        // separate so their original surfaces and new cut caps keep their color.
         for (const ModelVolume* mv : mo->volumes) {
-            if (mv->is_model_part() && !mv->is_cut_connector()) {
-                TriangleMesh m = mv->mesh();
-                m.transform(mv->get_matrix());
-                mesh.merge(m);
+            if (!mv->is_model_part() || mv->is_cut_connector() || mv->mesh().empty())
+                continue;
+
+            auto group = std::find_if(groups.begin(), groups.end(), [mv](const MergeGroup& candidate) {
+                return candidate.source->config.get() == mv->config.get() && candidate.source->material_id() == mv->material_id();
+            });
+            if (group == groups.end()) {
+                groups.push_back({mv, TriangleMesh()});
+                group = std::prev(groups.end());
             }
+
+            TriangleMesh mesh = mv->mesh();
+            mesh.transform(mv->get_matrix());
+            group->mesh.merge(mesh);
         }
-        if (!mesh.empty()) {
-            ModelVolume* new_volume = mo->add_volume(mesh);
-            new_volume->name = mo->name;
-            // Delete all merged SolidPart but not Connectors
-            for (int i = int(mo->volumes.size()) - 2; i >= 0; --i) {
-                const ModelVolume* mv = mo->volumes[i];
-                if (mv->is_model_part() && !mv->is_cut_connector())
-                    mo->delete_volume(i);
-            }
-            // Ensuring that volumes start with solid parts for proper slicing
-            mo->sort_volumes(true);
+        if (groups.empty())
+            continue;
+
+        // Add every replacement before deleting originals. Deleting down to one
+        // volume folds its transform into the instances and must happen last.
+        for (MergeGroup& group : groups) {
+            ModelVolume* new_volume = mo->add_volume(std::move(group.mesh));
+            new_volume->name        = groups.size() == 1 ? mo->name : group.source->name;
+            new_volume->config.assign_config(group.source->config);
+            assert(new_volume->config.id() != group.source->config.id());
+            if (const ModelMaterial* material = group.source->material())
+                new_volume->set_material(group.source->material_id(), *material);
+            else if (!group.source->material_id().empty())
+                new_volume->set_material_id(group.source->material_id());
         }
+        for (size_t i = original_volume_count; i > 0; --i) {
+            const ModelVolume* mv = mo->volumes[i - 1];
+            if (mv->is_model_part() && !mv->is_cut_connector())
+                mo->delete_volume(i - 1);
+        }
+        // Ensuring that volumes start with solid parts for proper slicing
+        mo->sort_volumes(true);
     }
 }
-
 
 const ModelObjectPtrs& Cut::perform_by_contour(const ModelObject* src_object, std::vector<Part> parts, int dowels_count)
 {
     ModelObject* cut_mo = m_model.objects.front();
 
     // Clone the object to duplicate instances, materials etc.
-    ModelObject* upper{ nullptr };
-    if (m_attributes.has(ModelObjectCutAttribute::KeepUpper)) cut_mo->clone_for_cut(&upper);
-    ModelObject* lower{ nullptr };
-    if (m_attributes.has(ModelObjectCutAttribute::KeepLower)) cut_mo->clone_for_cut(&lower);
+    ModelObject* upper{nullptr};
+    if (m_attributes.has(ModelObjectCutAttribute::KeepUpper))
+        cut_mo->clone_for_cut(&upper);
+    ModelObject* lower{nullptr};
+    if (m_attributes.has(ModelObjectCutAttribute::KeepLower))
+        cut_mo->clone_for_cut(&lower);
 
     if (upper && lower) {
         upper->name = upper->name + "_A";
@@ -475,7 +502,7 @@ const ModelObjectPtrs& Cut::perform_by_contour(const ModelObject* src_object, st
         for (const ModelVolume* volume : src_object->volumes) {
             saved_paintings.emplace_back(volume->save_painting());
             if (saved_paintings.back())
-                saved_paintings.back()->mesh.transform(instance_matrix * volume->get_matrix(), true);
+                saved_paintings.back()->transform = instance_matrix * volume->get_matrix();
         }
     }
 
@@ -550,7 +577,6 @@ const ModelObjectPtrs& Cut::perform_by_contour(const ModelObject* src_object, st
     return m_model.objects;
 }
 
-
 const ModelObjectPtrs& Cut::perform_with_groove(const Groove& groove, const Transform3d& rotation_m, bool keep_as_parts/* = false*/)
 {
     ModelObject* cut_mo = m_model.objects.front();
@@ -572,7 +598,7 @@ const ModelObjectPtrs& Cut::perform_with_groove(const Groove& groove, const Tran
         for (const ModelVolume* volume : cut_mo->volumes) {
             saved_paintings.emplace_back(volume->save_painting());
             if (saved_paintings.back())
-                saved_paintings.back()->mesh.transform(instance_matrix * volume->get_matrix(), true);
+                saved_paintings.back()->transform = instance_matrix * volume->get_matrix();
         }
     }
     const double groove_half_depth = 0.5 * double(groove.depth);

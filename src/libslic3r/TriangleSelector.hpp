@@ -377,8 +377,10 @@ public:
     void seed_fill_apply_on_triangles(EnforcerBlockerType new_state);
 
     // Painting data saved before an operation replaces a volume's mesh.
-    struct SavedPainting {
+    struct SavedPainting
+    {
         TriangleMesh          mesh;
+        Transform3d           transform = Transform3d::Identity();
         TriangleSplittingData supported;
         TriangleSplittingData seam;
         TriangleSplittingData mmu;
@@ -386,14 +388,15 @@ public:
     };
 
     // Remap painting data from source mesh to target mesh using spatial mapping.
-    // target_transform moves the target mesh into the source mesh's coordinate space.
+    // The transforms move both meshes into a common coordinate space. Apply the source
+    // transform after deserializing: mirrored winding must not change the saved split tree.
     // Existing painting may be supplied when several source volumes are merged into one target volume.
-    static TriangleSplittingData remap_painting(
-        const indexed_triangle_set& source_its,
-        const TriangleSplittingData& source_painting,
-        const indexed_triangle_set& target_its,
-        const Transform3d& target_transform,
-        const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting);
+    static TriangleSplittingData remap_painting(const indexed_triangle_set&                                               source_its,
+                                                const TriangleSplittingData&                                              source_painting,
+                                                const indexed_triangle_set&                                               target_its,
+                                                const Transform3d&                                                        target_transform,
+                                                const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting,
+                                                const Transform3d& source_transform = Transform3d::Identity());
 
     // Orca: Restrict painting to triangles that currently hold one of the given states, so that a
     // single filament can be recolored inside an area without disturbing the other filaments there.

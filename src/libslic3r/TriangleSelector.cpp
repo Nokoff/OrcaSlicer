@@ -2347,13 +2347,14 @@ public:
         , barycentric_(vertices[0], vertices[1], vertices[2])
     {}
 
-    static std::unique_ptr<Cursor> build_cursor(const TriangleSelector& selector, const TriangleSelector::Triangle& triangle)
+    static std::unique_ptr<Cursor> build_cursor(const TriangleSelector&           selector,
+                                                const TriangleSelector::Triangle& triangle,
+                                                const Vec3f&                      normal)
     {
         const Vec3f& p0 = selector.m_vertices[triangle.verts_idxs[0]].v;
         const Vec3f& p1 = selector.m_vertices[triangle.verts_idxs[1]].v;
         const Vec3f& p2 = selector.m_vertices[triangle.verts_idxs[2]].v;
         const Vec3f center = (p0 + p1 + p2) / 3.f;
-        const Vec3f& normal = selector.m_face_normals[triangle.source_triangle];
         const float radius = std::max(std::min({point_to_line_distance(center, p0, p1), point_to_line_distance(center, p0, p2),
                                                 point_to_line_distance(center, p1, p2)}),
                                       0.1f);
@@ -2414,9 +2415,11 @@ public:
         return false;
     }
 
-    bool is_facet_visible(int facet_idx, const std::vector<Vec3f>& face_normals) const override
+    bool is_facet_visible(int, const std::vector<Vec3f>&) const override
     {
-        return normals_match(face_normals[facet_idx], dir);
+        // Remapping visits each matching face through the AABB tree. Do not let
+        // brush propagation paint adjacent faces that have not passed that check.
+        return false;
     }
 
     static bool normals_match(const Vec3f& facet_normal, const Vec3f& camera_direction)
@@ -2440,11 +2443,12 @@ private:
 const double TriangleCursor::facet_angle_limit = std::cos(Geometry::deg2rad(5.0));
 
 TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
-    const indexed_triangle_set& source_its,
-    const TriangleSplittingData& source_painting,
-    const indexed_triangle_set& target_its,
-    const Transform3d& target_transform,
-    const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting)
+    const indexed_triangle_set&                                               source_its,
+    const TriangleSplittingData&                                              source_painting,
+    const indexed_triangle_set&                                               target_its,
+    const Transform3d&                                                        target_transform,
+    const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting,
+    const Transform3d&                                                        source_transform)
 {
     TriangleSplittingData result;
     if (source_painting.bitstream.empty())
@@ -2453,6 +2457,12 @@ TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
     TriangleMesh source_mesh(source_its);
     TriangleSelector source_selector(source_mesh);
     source_selector.deserialize(source_painting, false);
+
+    // Split trees refer to the original vertex order. Transform the reconstructed
+    // leaves without reversing that order, including for mirrored models.
+    for (Vertex& vertex : source_selector.m_vertices)
+        vertex.v = (source_transform * vertex.v.cast<double>()).cast<float>();
+    const Matrix3f normal_transform = source_transform.linear().inverse().transpose().cast<float>();
 
     std::vector<std::reference_wrapper<const Triangle>> painted_triangles;
     painted_triangles.reserve(source_selector.m_triangles.size());
@@ -2482,7 +2492,13 @@ TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
             is_strictly_inside(p0, t0, t1, t2) || is_strictly_inside(p1, t0, t1, t2) || is_strictly_inside(p2, t0, t1, t2))
             return true;
 
-        const Vec3f combined_normal = ((p1 - p0).cross(p2 - p0)).cwiseAbs() + ((t1 - t0).cross(t2 - t0)).cwiseAbs();
+        // A painted subdivision may have all three vertices on its original
+        // face's edges. Its centroid still lies inside that face, distinguishing
+        // positive-area containment from triangles that only share an edge.
+        if (is_strictly_inside((p0 + p1 + p2) / 3.f, t0, t1, t2) || is_strictly_inside((t0 + t1 + t2) / 3.f, p0, p1, p2))
+            return true;
+
+        const Vec3f               combined_normal = ((p1 - p0).cross(p2 - p0)).cwiseAbs() + ((t1 - t0).cross(t2 - t0)).cwiseAbs();
         const int dominant_axis = combined_normal.x() >= combined_normal.y() && combined_normal.x() >= combined_normal.z() ? 0 :
                                   combined_normal.y() >= combined_normal.z() ? 1 : 2;
         const std::pair<int, int> projection{(dominant_axis + 1) % 3, (dominant_axis + 2) % 3};
@@ -2506,6 +2522,7 @@ TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
         const Vec3f& p1 = source_selector.m_vertices[triangle.verts_idxs[1]].v;
         const Vec3f& p2 = source_selector.m_vertices[triangle.verts_idxs[2]].v;
         const Barycentric source_coordinates(p0, p1, p2);
+        const Vec3f       source_normal = (normal_transform * source_selector.m_face_normals[triangle.source_triangle]).normalized();
 
         Eigen::AlignedBox3f paint_bounds;
         paint_bounds.extend(p0);
@@ -2520,12 +2537,18 @@ TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
             if (face_index >= target_mesh.its.indices.size())
                 return true;
 
-            const Vec3f& source_normal = source_selector.m_face_normals[triangle.source_triangle];
             const Vec3f& target_normal = target_selector.m_face_normals[face_index];
             const Vec3i32& face = target_mesh.its.indices[face_index];
             const Vec3f& t0 = target_mesh.its.vertices[face(0)];
             const Vec3f& t1 = target_mesh.its.vertices[face(1)];
-            const Vec3f& t2 = target_mesh.its.vertices[face(2)];
+            const Vec3f&   t2            = target_mesh.its.vertices[face(2)];
+
+            // Cut caps can have almost the same normal and projected footprint
+            // as an original surface. Only transfer paint to the original plane.
+            if (std::abs((t0 - p0).dot(source_normal)) > TriangleCursor::tolerance ||
+                std::abs((t1 - p0).dot(source_normal)) > TriangleCursor::tolerance ||
+                std::abs((t2 - p0).dot(source_normal)) > TriangleCursor::tolerance)
+                return true;
 
             if (TriangleCursor::normals_match(target_normal, -source_normal)) {
                 // Planar cutting commonly produces faces that are exact subsets of
@@ -2536,7 +2559,8 @@ TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
                     source_coordinates.is_point_inside_triangle(t2, TriangleCursor::tolerance)) {
                     target_selector.set_facet(static_cast<int>(face_index), triangle.get_state());
                 } else if (triangles_overlap(p0, p1, p2, t0, t1, t2)) {
-                    target_selector.select_patch(static_cast<int>(face_index), TriangleCursor::build_cursor(source_selector, triangle),
+                    target_selector.select_patch(static_cast<int>(face_index),
+                                                 TriangleCursor::build_cursor(source_selector, triangle, source_normal),
                                                  triangle.get_state(), Transform3d::Identity(), true);
                 }
             }

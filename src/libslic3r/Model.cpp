@@ -2203,7 +2203,7 @@ void ModelVolume::restore_painting(const std::optional<TriangleSelector::SavedPa
             keep_existing_paint ? std::optional<std::reference_wrapper<const TriangleSelector::TriangleSplittingData>>(std::cref(target.get_data())) :
                                   std::nullopt;
         auto remapped = TriangleSelector::remap_painting(saved->mesh.its, source, mesh().its,
-                                                         Geometry::translation_transform(mesh().get_init_shift()), existing);
+                                                         Geometry::translation_transform(mesh().get_init_shift()), existing, saved->transform);
         if (!remapped.bitstream.empty())
             target.set_data(std::move(remapped));
     };
