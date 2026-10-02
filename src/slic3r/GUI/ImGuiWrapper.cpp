@@ -70,6 +70,7 @@ static const std::map<const wchar_t, std::string> font_icons = {
     {ImGui::ConfirmIcon            , "confirm"                       },
     {ImGui::GapFillIcon            , "gap_fill"                      },
     {ImGui::MagicFillButtonIcon    , "magic_fill"                    },
+    {ImGui::DeepHeightRangeIcon    , "height_range_deep"             },
     {ImGui::FoldButtonIcon         , "im_fold"                       },
     {ImGui::UnfoldButtonIcon       , "im_unfold"                     },
     {ImGui::gCodeButtonIcon        , "im_code"                       }, //ORCA
@@ -92,6 +93,7 @@ static const std::map<const wchar_t, std::string> font_icons = {
     {ImGui::ConfirmDarkIcon            , "confirm_dark"                       },
     {ImGui::GapFillDarkIcon            , "gap_fill_dark"                      },
     {ImGui::MagicFillButtonDarkIcon    , "magic_fill_dark"                   },
+    {ImGui::DeepHeightRangeDarkIcon    , "height_range_deep_dark"            },
     {ImGui::SphereButtonDarkIcon       , "toolbar_modifier_sphere_dark"       },
 
     {ImGui::TextSearchIcon             , "im_text_search"             },

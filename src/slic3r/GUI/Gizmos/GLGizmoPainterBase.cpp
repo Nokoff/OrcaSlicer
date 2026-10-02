@@ -167,7 +167,7 @@ void GLGizmoPainterBase::render_cursor()
             render_cursor_sphere(trafo_matrices[m_rr.mesh_id]);
         else if (m_cursor_type == TriangleSelector::CIRCLE)
             render_cursor_circle();
-        else if (m_cursor_type == TriangleSelector::HEIGHT_RANGE)
+        else if (is_any_height_range())
             render_cursor_height_range(trafo_matrices[m_rr.mesh_id]);
     }
 }
@@ -408,8 +408,9 @@ void GLGizmoPainterBase::render_cursor_height_range(const Transform3d& trafo) co
     float max_z = (float)box.max.z();
     float min_z = (float)box.min.z();
 
-    float cursor_z = std::clamp((float)hit_world.z(), min_z, max_z);
-    std::array<float, 2> zs = { cursor_z, std::clamp(cursor_z + m_cursor_height, min_z, max_z) };
+    const float band_bottom = height_range_bottom((float)hit_world.z());
+    float cursor_z = std::clamp(band_bottom, min_z, max_z);
+    std::array<float, 2> zs = { cursor_z, std::clamp(band_bottom + height_range_thickness(), min_z, max_z) };
 
     const Selection& selection = m_parent.get_selection();
     const ModelObject* model_object = wxGetApp().model().objects[selection.get_object_idx()];
@@ -648,8 +649,8 @@ std::vector<GLGizmoPainterBase::ProjectedHeightRange> GLGizmoPainterBase::get_pr
         return hit_triangles_by_mesh;
 
     ProjectedMousePosition mesh_hit_point = { m_rr.hit, m_rr.mesh_id, m_rr.facet };
-    float z_bot_world= (trafo_matrices[m_rr.mesh_id] * Vec3d(m_rr.hit(0), m_rr.hit(1), m_rr.hit(2))).z();
-    float z_top_world = z_bot_world+ m_cursor_height;
+    float z_bot_world = height_range_bottom((trafo_matrices[m_rr.mesh_id] * Vec3d(m_rr.hit(0), m_rr.hit(1), m_rr.hit(2))).z());
+    float z_top_world = z_bot_world + height_range_thickness();
     hit_triangles_by_mesh.push_back({ z_bot_world, m_rr.mesh_id, size_t(m_rr.facet) });
 
     const Selection& selection = m_parent.get_selection();
@@ -721,6 +722,13 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
     if (action == SLAGizmoEventType::MouseWheelUp
      || action == SLAGizmoEventType::MouseWheelDown) {
         if (control_down) {
+            if (m_tool_type == ToolType::BRUSH && is_deep_height_range()) {
+                m_deep_height = action == SLAGizmoEventType::MouseWheelDown ? std::max(m_deep_height / DeepHeightStep, DeepHeightMin) :
+                                                                              std::min(m_deep_height * DeepHeightStep, DeepHeightMax);
+                m_parent.set_as_dirty();
+                return true;
+            }
+
             //BBS
             if (m_tool_type == ToolType::BRUSH && m_cursor_type == TriangleSelector::CursorType::HEIGHT_RANGE) {
                 m_cursor_height = action == SLAGizmoEventType::MouseWheelDown ? std::max(m_cursor_height - this->get_cursor_height_step(), this->get_cursor_height_min()) :
@@ -847,7 +855,7 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
         }
 
         // BBS
-        if (m_tool_type == ToolType::BRUSH && m_cursor_type == TriangleSelector::CursorType::HEIGHT_RANGE)
+        if (m_tool_type == ToolType::BRUSH && is_any_height_range())
         {
             std::vector<ProjectedHeightRange> projected_height_range_by_mesh = get_projected_height_range(_mouse_position, 1., part_volumes, trafo_matrices);
             m_last_mouse_click = Vec2d::Zero();
@@ -875,7 +883,7 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
                 const TriangleSelector::ClippingPlane& clp = this->get_clipping_plane_in_volume_coordinates(trafo_matrix);
 
                 std::unique_ptr<TriangleSelector::Cursor> cursor = TriangleSelector::SinglePointCursor::cursor_factory(phr.z_world,
-                    camera_pos, m_cursor_height, trafo_matrix, clp);
+                    camera_pos, height_range_thickness(), trafo_matrix, clp, is_deep_height_range());
                 ScopedReplaceFilter replace_filter(*m_triangle_selectors[mesh_idx], this->get_replace_filter_states(mesh_idx));
                 m_triangle_selectors[mesh_idx]->select_patch(int(phr.first_facet_idx), std::move(cursor), new_state, trafo_matrix_not_translate,
                     m_triangle_splitting_enabled, m_paint_on_overhangs_only ? m_highlight_by_angle_threshold_deg : 0.f);

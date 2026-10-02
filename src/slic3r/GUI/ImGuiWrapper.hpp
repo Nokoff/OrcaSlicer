@@ -31,6 +31,8 @@ namespace ImGui {
 // here avoids modifying the vendored ImGui configuration for Orca-specific tools.
 inline constexpr wchar_t MagicFillButtonIcon     = 0x0845;
 inline constexpr wchar_t MagicFillButtonDarkIcon = 0x0846;
+inline constexpr wchar_t DeepHeightRangeIcon     = 0x0847;
+inline constexpr wchar_t DeepHeightRangeDarkIcon = 0x0848;
 } // namespace ImGui
 
 

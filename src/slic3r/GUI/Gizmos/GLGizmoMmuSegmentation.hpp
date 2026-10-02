@@ -144,10 +144,23 @@ protected:
     std::vector<bool> m_auto_paint_filaments;
     float             m_auto_paint_boundary_preference = 75.f;
 
+    // Orca: despeckle. Painted regions of up to this area (mm^2) are merged into the color around them.
+    float             m_speck_max_area = 1.f;
+    // How far around a speck (mm, along the surface) the surrounding colors are sampled.
+    float             m_speck_blend_radius = 3.f;
+    // Orca: smooth edges. How far around a border (mm, along the surface) the colors are blended.
+    float             m_smooth_radius = 1.f;
+
     // Minimal context for gradient rendering; only physical_colors is used
     MixedFilamentDisplayContext       m_mixed_display_context;
 
     static const constexpr float      CursorRadiusMin = 0.1f; // cannot be zero
+    static const constexpr float      SpeckAreaMin    = 0.01f;
+    static const constexpr float      SpeckAreaMax    = 100.f;
+    static const constexpr float      SpeckRadiusMin  = 0.2f;
+    static const constexpr float      SpeckRadiusMax  = 30.f;
+    static const constexpr float      SmoothRadiusMin = 0.2f;
+    static const constexpr float      SmoothRadiusMax = 10.f;
 
 private:
     bool on_init() override;
@@ -169,6 +182,8 @@ private:
     void init_extruders_data();
     void init_extruders_data(const std::vector<ColorRGBA> &extruder_colors);
     void auto_paint_model();
+    void remove_specks();
+    void smooth_edges();
 
     // Filament remapping methods
     void remap_filament_assignments();

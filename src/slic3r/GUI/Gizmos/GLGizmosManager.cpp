@@ -1002,7 +1002,7 @@ bool GLGizmosManager::on_key(wxKeyEvent& evt)
                         processed = mmu_seg->on_number_key_down(keyCode - '0');
                     }
                 }
-                else if (keyCode == 'F' || keyCode == 'T' || keyCode == 'S' || keyCode == 'C' || keyCode == 'H' || keyCode == 'G') {
+                else if (keyCode == 'F' || keyCode == 'T' || keyCode == 'S' || keyCode == 'C' || keyCode == 'H' || keyCode == 'G' || keyCode == 'M' || keyCode == 'D') {
                     processed = mmu_seg->on_key_down_select_tool_type(keyCode);
                     if (processed) {
                         // force extra frame to automatically update window size

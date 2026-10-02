@@ -5,6 +5,9 @@
 #include <boost/container/small_vector.hpp>
 #include <boost/log/trivial.hpp>
 #include <cstddef>
+#include <map>
+#include <queue>
+#include <unordered_map>
 #include <tbb/parallel_for.h>
 
 #ifndef NDEBUG
@@ -302,6 +305,16 @@ void TriangleSelector::select_patch(int facet_start, std::unique_ptr<Cursor> &&c
     // BBS
     std::vector<int> start_facets;
     HeightRange* hr_cursor = dynamic_cast<HeightRange*>(m_cursor.get());
+
+    // Orca: the full depth band visits every facet of the mesh on its own. There is no flood fill that could stop
+    // at a boundary and no overhang filter, so inner walls and disconnected internal shells are reached as well.
+    if (hr_cursor && hr_cursor->is_full_depth()) {
+        for (int facet_id = 0; facet_id < m_orig_size_indices; ++facet_id)
+            if (m_triangles[facet_id].valid() && m_cursor->is_edge_inside_cursor(m_triangles[facet_id], m_vertices))
+                select_triangle(facet_id, new_state, triangle_splitting);
+        return;
+    }
+
     if (hr_cursor) {
         for (int facet_id = 0; facet_id < m_orig_size_indices; facet_id++) {
             const Triangle& tr = m_triangles[facet_id];
@@ -518,6 +531,465 @@ void TriangleSelector::append_touching_edges(int itriangle, int vertexi, int ver
         process_subtriangle(touching.second, Partition::Second);
 }
 
+std::vector<int> TriangleSelector::get_touching_leaf_triangles(int facet_idx, const Vec3i32 &neighbors, const Vec3i32 &neighbors_propagated) const
+{
+    assert(facet_idx != -1 && facet_idx < int(m_triangles.size()));
+    assert(this->verify_triangle_neighbors(m_triangles[facet_idx], neighbors));
+    std::vector<int> touching_triangles;
+    Vec3i32          vertices = {m_triangles[facet_idx].verts_idxs[0], m_triangles[facet_idx].verts_idxs[1], m_triangles[facet_idx].verts_idxs[2]};
+    append_touching_subtriangles(neighbors(0), vertices(1), vertices(0), touching_triangles);
+    append_touching_subtriangles(neighbors(1), vertices(2), vertices(1), touching_triangles);
+    append_touching_subtriangles(neighbors(2), vertices(0), vertices(2), touching_triangles);
+
+    for (int neighbor_idx : neighbors_propagated)
+        if (neighbor_idx != -1 && !m_triangles[neighbor_idx].is_split())
+            touching_triangles.emplace_back(neighbor_idx);
+
+    return touching_triangles;
+}
+
+int TriangleSelector::remove_small_regions(float max_area, float blend_radius, const Transform3d &trafo)
+{
+    if (max_area <= 0.f)
+        return 0;
+    blend_radius = std::max(blend_radius, 1e-3f);
+
+    const Matrix3f linear = trafo.linear().cast<float>();
+    const auto     corner = [this](int tr_idx, int i) -> const Vec3f & { return m_vertices[m_triangles[tr_idx].verts_idxs[i]].v; };
+    const auto     leaf_area = [&](int tr_idx) {
+        const Vec3f a = linear * corner(tr_idx, 0);
+        const Vec3f b = linear * corner(tr_idx, 1);
+        const Vec3f c = linear * corner(tr_idx, 2);
+        return 0.5f * (b - a).cross(c - a).norm();
+    };
+    const auto leaf_centroid = [&](int tr_idx) -> Vec3f {
+        return linear * ((corner(tr_idx, 0) + corner(tr_idx, 1) + corner(tr_idx, 2)) / 3.f);
+    };
+
+    struct Region
+    {
+        std::vector<int>    triangles;
+        float               area = 0.f;
+        EnforcerBlockerType state = EnforcerBlockerType::NONE;
+    };
+
+    int repainted_total = 0;
+    // A repainted speck can join a neighboring region and form a bigger one, so go on until nothing changes.
+    for (int pass = 0; pass < 8; ++pass) {
+        auto [neighbors, neighbors_propagated] = this->precompute_all_neighbors();
+
+        std::vector<int> leaves;
+        for (int tr_idx = 0; tr_idx < int(m_triangles.size()); ++tr_idx)
+            if (m_triangles[tr_idx].valid() && !m_triangles[tr_idx].is_split())
+                leaves.push_back(tr_idx);
+
+        std::vector<std::vector<int>> adjacency(m_triangles.size());
+        for (int tr_idx : leaves)
+            for (int touching : this->get_touching_leaf_triangles(tr_idx, neighbors[tr_idx], neighbors_propagated[tr_idx]))
+                if (touching >= 0 && touching != tr_idx && m_triangles[touching].valid() && !m_triangles[touching].is_split()) {
+                    adjacency[tr_idx].push_back(touching);
+                    adjacency[touching].push_back(tr_idx);
+                }
+        for (std::vector<int> &list : adjacency) {
+            std::sort(list.begin(), list.end());
+            list.erase(std::unique(list.begin(), list.end()), list.end());
+        }
+
+        // Connected regions of one state.
+        std::vector<int>    region_of(m_triangles.size(), -1);
+        std::vector<Region> regions;
+        for (int seed : leaves) {
+            if (region_of[seed] != -1)
+                continue;
+            const int region_idx = int(regions.size());
+            regions.emplace_back();
+            Region &region = regions.back();
+            region.state   = m_triangles[seed].get_state();
+            std::queue<int> queue;
+            queue.push(seed);
+            region_of[seed] = region_idx;
+            while (!queue.empty()) {
+                const int current = queue.front();
+                queue.pop();
+                region.triangles.push_back(current);
+                region.area += leaf_area(current);
+                for (int next : adjacency[current])
+                    if (region_of[next] == -1 && m_triangles[next].get_state() == region.state) {
+                        region_of[next] = region_idx;
+                        queue.push(next);
+                    }
+            }
+        }
+
+        std::vector<int> specks;
+        for (int region_idx = 0; region_idx < int(regions.size()); ++region_idx)
+            if (regions[region_idx].area <= max_area)
+                specks.push_back(region_idx);
+        std::sort(specks.begin(), specks.end(), [&regions](int l, int r) { return regions[l].area < regions[r].area; });
+
+        int repainted = 0;
+        for (int region_idx : specks) {
+            const Region &region = regions[region_idx];
+
+            // A neighbor repainted into this very state earlier in the pass makes this part of a bigger region, which
+            // may be above the limit. Leave the decision to the next pass.
+            bool joined_another_region = false;
+            for (int tr_idx : region.triangles) {
+                for (int next : adjacency[tr_idx])
+                    if (region_of[next] != region_idx && m_triangles[next].get_state() == region.state) {
+                        joined_another_region = true;
+                        break;
+                    }
+                if (joined_another_region)
+                    break;
+            }
+            if (joined_another_region)
+                continue;
+
+            // Walk the surface outwards from the speck in every direction (Dijkstra over triangle centers, so the walk
+            // follows the mesh and never leaks through a thin wall) and let every triangle of another state vote for its
+            // state with its area, weighted down linearly with the distance. The walk is bounded by the blend radius,
+            // but the triangles right at the speck always vote, however large they are.
+            std::unordered_map<int, float> distance;
+            using QueueItem = std::pair<float, int>;
+            std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> queue;
+            for (int tr_idx : region.triangles) {
+                distance[tr_idx] = 0.f;
+                queue.emplace(0.f, tr_idx);
+            }
+            std::map<int, float> votes;
+            while (!queue.empty()) {
+                const auto [dist, current] = queue.top();
+                queue.pop();
+                if (dist > distance[current])
+                    continue;
+                const bool in_region = region_of[current] == region_idx;
+                if (!in_region && m_triangles[current].get_state() != region.state) {
+                    const float falloff = std::max(0.05f, 1.f - dist / blend_radius);
+                    votes[int(m_triangles[current].get_state())] += leaf_area(current) * falloff;
+                }
+                const Vec3f center = leaf_centroid(current);
+                for (int next : adjacency[current]) {
+                    if (region_of[next] == region_idx)
+                        continue;
+                    const float next_dist = dist + (leaf_centroid(next) - center).norm();
+                    // Direct neighbors are accepted at any distance, the rest only within the radius.
+                    if (next_dist > blend_radius && !in_region)
+                        continue;
+                    auto found = distance.find(next);
+                    if (found == distance.end() || next_dist < found->second) {
+                        distance[next] = next_dist;
+                        queue.emplace(next_dist, next);
+                    }
+                }
+            }
+            if (votes.empty())
+                continue;
+
+            const auto winner = std::max_element(votes.begin(), votes.end(), [](const auto &l, const auto &r) { return l.second < r.second; });
+            for (int tr_idx : region.triangles)
+                m_triangles[tr_idx].set_state(EnforcerBlockerType(winner->first));
+            ++repainted;
+        }
+
+        if (repainted == 0)
+            break;
+        repainted_total += repainted;
+
+        for (Triangle &triangle : m_triangles)
+            if (triangle.is_split() && triangle.valid())
+                remove_useless_children(int(&triangle - &m_triangles.front()));
+    }
+
+    return repainted_total;
+}
+
+namespace {
+// The part of segment p0-p1 covered by the collinear segment q0-q1. False if they do not overlap.
+bool collinear_overlap_segment(const Vec3f &p0, const Vec3f &p1, const Vec3f &q0, const Vec3f &q1, Vec3f &from, Vec3f &to)
+{
+    constexpr float tolerance = 1e-3f;
+    const Vec3f     d         = p1 - p0;
+    const float     length    = d.norm();
+    if (length < 1e-6f)
+        return false;
+
+    const Vec3f dir = d / length;
+    for (const Vec3f *q : {&q0, &q1}) {
+        const Vec3f rel = *q - p0;
+        if ((rel - dir * rel.dot(dir)).norm() > tolerance)
+            return false;
+    }
+
+    const float t0 = (q0 - p0).dot(dir);
+    const float t1 = (q1 - p0).dot(dir);
+    const float lo = std::max(0.f, std::min(t0, t1));
+    const float hi = std::min(length, std::max(t0, t1));
+    if (hi - lo < 1e-5f)
+        return false;
+    from = p0 + dir * lo;
+    to   = p0 + dir * hi;
+    return true;
+}
+
+// Points in space with an "is any of them within this distance of" query. A uniform hash grid.
+class PointGrid
+{
+public:
+    explicit PointGrid(float cell_size) : m_cell(cell_size) {}
+
+    void insert(const Vec3f &point)
+    {
+        m_cells[key(index(point.x()), index(point.y()), index(point.z()))].push_back(point);
+        ++m_count;
+    }
+    bool empty() const { return m_count == 0; }
+
+    bool any_within(const Vec3f &center, float distance) const
+    {
+        const float distance_sqr = distance * distance;
+        const int   lo[3]        = {index(center.x() - distance), index(center.y() - distance), index(center.z() - distance)};
+        const int   hi[3]        = {index(center.x() + distance), index(center.y() + distance), index(center.z() + distance)};
+        const double span        = double(hi[0] - lo[0] + 1) * double(hi[1] - lo[1] + 1) * double(hi[2] - lo[2] + 1);
+
+        const auto close_in = [&](const std::vector<Vec3f> &points) {
+            for (const Vec3f &point : points)
+                if ((point - center).squaredNorm() <= distance_sqr)
+                    return true;
+            return false;
+        };
+
+        if (span > double(m_cells.size())) {
+            // A big query box (a long triangle): cheaper to look at every occupied cell than at every cell of the box.
+            for (const auto &cell : m_cells)
+                if (close_in(cell.second))
+                    return true;
+            return false;
+        }
+        for (int x = lo[0]; x <= hi[0]; ++x)
+            for (int y = lo[1]; y <= hi[1]; ++y)
+                for (int z = lo[2]; z <= hi[2]; ++z)
+                    if (auto cell = m_cells.find(key(x, y, z)); cell != m_cells.end() && close_in(cell->second))
+                        return true;
+        return false;
+    }
+
+private:
+    int index(float coordinate) const { return int(std::floor(coordinate / m_cell)); }
+    static uint64_t key(int x, int y, int z)
+    {
+        constexpr int      offset = 1 << 20;
+        constexpr uint64_t mask   = (uint64_t(1) << 21) - 1;
+        return (uint64_t(x + offset) & mask) | ((uint64_t(y + offset) & mask) << 21) | ((uint64_t(z + offset) & mask) << 42);
+    }
+
+    float                                            m_cell;
+    size_t                                           m_count = 0;
+    std::unordered_map<uint64_t, std::vector<Vec3f>> m_cells;
+};
+} // namespace
+
+void TriangleSelector::refine_triangle_recursive(int facet_idx, const Vec3i32 &neighbors, const std::function<bool(int)> &should_split)
+{
+    if (!m_triangles[facet_idx].valid())
+        return;
+
+    if (!m_triangles[facet_idx].is_split()) {
+        if (!should_split(facet_idx))
+            return;
+        this->split_triangle(facet_idx, neighbors);
+        if (!m_triangles[facet_idx].is_split())
+            return;
+    }
+
+    // Triangles may have been reallocated by the split, so always go through the index.
+    const int num_of_children = m_triangles[facet_idx].number_of_split_sides() + 1;
+    if (num_of_children == 1)
+        return;
+    for (int i = 0; i < num_of_children; ++i) {
+        const Triangle &tr = m_triangles[facet_idx];
+        this->refine_triangle_recursive(tr.children[i], this->child_neighbors(tr, neighbors, i), should_split);
+    }
+}
+
+int TriangleSelector::smooth_boundaries(float radius, const Transform3d &trafo)
+{
+    radius = std::max(radius, 0.05f);
+    // Edge length of the triangles in the refined strip along a border. Smaller is smoother and costs more triangles.
+    const float step = std::max(radius * 0.25f, 0.05f);
+    // Safety net for pathological input: stop refining beyond this many triangles.
+    constexpr size_t max_triangles = 4000000;
+
+    const Matrix3f linear = trafo.linear().cast<float>();
+    const auto     corner = [this](int tr_idx, int i) -> const Vec3f & { return m_vertices[m_triangles[tr_idx].verts_idxs[i]].v; };
+    const auto     world_corner = [&](int tr_idx, int i) -> Vec3f { return linear * corner(tr_idx, i); };
+
+    // split_triangle() consults the cursor for how to measure edges and for the edge limit, so leave a plain one in place
+    // while refining, and put everything back the way it was found.
+    struct SavedCursorState
+    {
+        TriangleSelector       &selector;
+        std::unique_ptr<Cursor> cursor;
+        float                   edge_limit_sqr;
+        ~SavedCursorState()
+        {
+            selector.m_cursor         = std::move(cursor);
+            selector.m_edge_limit_sqr = edge_limit_sqr;
+        }
+    } saved{*this, std::move(m_cursor), m_edge_limit_sqr};
+    m_cursor = std::make_unique<Sphere>(Vec3f::Zero(), Vec3f::Zero(), 1.f, trafo, ClippingPlane());
+    // For a uniformly scaled object the edges are measured in mesh coordinates, and the radius of a cursor of world
+    // radius 1 is exactly the factor from world to mesh length. Otherwise edges are measured in world coordinates.
+    this->set_edge_limit(step * m_cursor->radius);
+
+    // The graph of touching unsplit triangles.
+    std::vector<int>              leaves;
+    std::vector<std::vector<int>> adjacency;
+    const auto build_graph = [&]() {
+        auto [neighbors, neighbors_propagated] = this->precompute_all_neighbors();
+        leaves.clear();
+        for (int tr_idx = 0; tr_idx < int(m_triangles.size()); ++tr_idx)
+            if (m_triangles[tr_idx].valid() && !m_triangles[tr_idx].is_split())
+                leaves.push_back(tr_idx);
+        adjacency.assign(m_triangles.size(), {});
+        for (int tr_idx : leaves)
+            for (int touching : this->get_touching_leaf_triangles(tr_idx, neighbors[tr_idx], neighbors_propagated[tr_idx]))
+                if (touching >= 0 && touching != tr_idx && m_triangles[touching].valid() && !m_triangles[touching].is_split()) {
+                    adjacency[tr_idx].push_back(touching);
+                    adjacency[touching].push_back(tr_idx);
+                }
+        for (std::vector<int> &list : adjacency) {
+            std::sort(list.begin(), list.end());
+            list.erase(std::unique(list.begin(), list.end()), list.end());
+        }
+    };
+
+    // Sample the borders between different states. The refinement and the vote are both driven by the distance to them.
+    PointGrid borders(std::max(radius, step));
+    build_graph();
+    for (int tr_a : leaves)
+        for (int tr_b : adjacency[tr_a]) {
+            if (tr_b < tr_a || m_triangles[tr_a].get_state() == m_triangles[tr_b].get_state())
+                continue;
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j) {
+                    Vec3f from, to;
+                    if (!collinear_overlap_segment(corner(tr_a, i), corner(tr_a, (i + 1) % 3), corner(tr_b, j), corner(tr_b, (j + 1) % 3), from, to))
+                        continue;
+                    from = linear * from;
+                    to   = linear * to;
+                    const int pieces = std::max(1, int(std::ceil((to - from).norm() / step)));
+                    for (int k = 0; k <= pieces; ++k)
+                        borders.insert(from + (to - from) * (float(k) / float(pieces)));
+                }
+        }
+    if (borders.empty())
+        return 0;
+
+    // Split the triangles near a border into small ones. Triangles are tested as a bounding sphere, which errs on the side
+    // of splitting a little more than needed, and the children are then tested more tightly.
+    const float step_sqr     = step * step;
+    const auto  should_split = [&](int tr_idx) {
+        if (m_triangles.size() > max_triangles)
+            return false;
+        const std::array<Vec3f, 3> pts = {world_corner(tr_idx, 0), world_corner(tr_idx, 1), world_corner(tr_idx, 2)};
+        const float longest_sqr = std::max({(pts[1] - pts[0]).squaredNorm(), (pts[2] - pts[1]).squaredNorm(), (pts[0] - pts[2]).squaredNorm()});
+        if (longest_sqr <= step_sqr)
+            return false;
+        const Vec3f center = (pts[0] + pts[1] + pts[2]) / 3.f;
+        const float spread = std::sqrt(std::max({(pts[0] - center).squaredNorm(), (pts[1] - center).squaredNorm(), (pts[2] - center).squaredNorm()}));
+        return borders.any_within(center, radius + spread);
+    };
+    const std::function<bool(int)> should_split_fn = should_split;
+    for (int tr_idx = 0; tr_idx < m_orig_size_indices; ++tr_idx)
+        this->refine_triangle_recursive(tr_idx, m_neighbors[tr_idx], should_split_fn);
+
+    // The triangles that may change: the ones within the radius of a border.
+    build_graph();
+    std::vector<Vec3f> centers(m_triangles.size(), Vec3f::Zero());
+    std::vector<float> areas(m_triangles.size(), 0.f);
+    for (int tr_idx : leaves) {
+        const std::array<Vec3f, 3> pts = {world_corner(tr_idx, 0), world_corner(tr_idx, 1), world_corner(tr_idx, 2)};
+        centers[tr_idx] = (pts[0] + pts[1] + pts[2]) / 3.f;
+        areas[tr_idx]   = 0.5f * (pts[1] - pts[0]).cross(pts[2] - pts[0]).norm();
+    }
+    std::vector<int> band;
+    for (int tr_idx : leaves)
+        if (borders.any_within(centers[tr_idx], radius))
+            band.push_back(tr_idx);
+
+    // Every triangle of the band takes the state that wins the weighted vote of the surface around it. All votes are
+    // counted on the states as they were, and applied only afterwards.
+    std::vector<float>               distance(m_triangles.size(), FLT_MAX);
+    std::vector<int>                 touched;
+    std::vector<EnforcerBlockerType> new_states(band.size());
+    for (size_t band_idx = 0; band_idx < band.size(); ++band_idx) {
+        const int origin = band[band_idx];
+
+        using QueueItem = std::pair<float, int>;
+        std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> queue;
+        std::vector<std::pair<int, float>>                                              votes;
+        distance[origin] = 0.f;
+        touched.push_back(origin);
+        queue.emplace(0.f, origin);
+        while (!queue.empty()) {
+            const auto [dist, current] = queue.top();
+            queue.pop();
+            if (dist > distance[current])
+                continue;
+
+            // Gaussian falloff, down to about 13% of the weight at the edge of the radius.
+            const float weight = areas[current] * std::exp(-2.f * (dist / radius) * (dist / radius));
+            const int   state  = int(m_triangles[current].get_state());
+            if (auto vote = std::find_if(votes.begin(), votes.end(), [state](const auto &v) { return v.first == state; }); vote != votes.end())
+                vote->second += weight;
+            else
+                votes.emplace_back(state, weight);
+
+            for (int next : adjacency[current]) {
+                const float next_dist = dist + (centers[next] - centers[current]).norm();
+                if (next_dist <= radius && next_dist < distance[next]) {
+                    if (distance[next] == FLT_MAX)
+                        touched.push_back(next);
+                    distance[next] = next_dist;
+                    queue.emplace(next_dist, next);
+                }
+            }
+        }
+        for (int tr_idx : touched)
+            distance[tr_idx] = FLT_MAX;
+        touched.clear();
+
+        // Keep the current state unless another one clearly wins, so equal votes do not make the borders flicker.
+        const EnforcerBlockerType current_state = m_triangles[origin].get_state();
+        float                     current_vote  = 0.f;
+        for (const auto &vote : votes)
+            if (vote.first == int(current_state))
+                current_vote = vote.second;
+        new_states[band_idx] = current_state;
+        float best_vote      = current_vote * 1.0001f + 1e-9f;
+        for (const auto &vote : votes)
+            if (vote.second > best_vote) {
+                best_vote            = vote.second;
+                new_states[band_idx] = EnforcerBlockerType(vote.first);
+            }
+    }
+
+    int changed = 0;
+    for (size_t band_idx = 0; band_idx < band.size(); ++band_idx)
+        if (m_triangles[band[band_idx]].get_state() != new_states[band_idx]) {
+            m_triangles[band[band_idx]].set_state(new_states[band_idx]);
+            ++changed;
+        }
+
+    // Merge the small triangles back wherever they ended up with one state.
+    for (Triangle &triangle : m_triangles)
+        if (triangle.is_split() && triangle.valid())
+            remove_useless_children(int(&triangle - &m_triangles.front()));
+
+    return changed;
+}
+
 // BBS: add seed_fill_angle parameter
 void TriangleSelector::bucket_fill_select_triangles(const Vec3f& hit, int facet_start, const ClippingPlane &clp, float seed_fill_angle, bool propagate, bool force_reselection)
 {
@@ -540,19 +1012,7 @@ void TriangleSelector::bucket_fill_select_triangles(const Vec3f& hit, int facet_
     const double facet_angle_limit = (seed_fill_angle < 0.f ? -1.f : cos(Geometry::deg2rad(seed_fill_angle))) - EPSILON;
 
     auto get_all_touching_triangles = [this](int facet_idx, const Vec3i32 &neighbors, const Vec3i32 &neighbors_propagated) -> std::vector<int> {
-        assert(facet_idx != -1 && facet_idx < int(m_triangles.size()));
-        assert(this->verify_triangle_neighbors(m_triangles[facet_idx], neighbors));
-        std::vector<int> touching_triangles;
-        Vec3i32            vertices = {m_triangles[facet_idx].verts_idxs[0], m_triangles[facet_idx].verts_idxs[1], m_triangles[facet_idx].verts_idxs[2]};
-        append_touching_subtriangles(neighbors(0), vertices(1), vertices(0), touching_triangles);
-        append_touching_subtriangles(neighbors(1), vertices(2), vertices(1), touching_triangles);
-        append_touching_subtriangles(neighbors(2), vertices(0), vertices(2), touching_triangles);
-
-        for (int neighbor_idx : neighbors_propagated)
-            if (neighbor_idx != -1 && !m_triangles[neighbor_idx].is_split())
-                touching_triangles.emplace_back(neighbor_idx);
-
-        return touching_triangles;
+        return this->get_touching_leaf_triangles(facet_idx, neighbors, neighbors_propagated);
     };
 
     auto [neighbors, neighbors_propagated] = this->precompute_all_neighbors();
@@ -1168,18 +1628,20 @@ bool TriangleSelector::HeightRange::is_pointer_in_triangle(const Vec3f& p1_, con
 bool TriangleSelector::HeightRange::is_mesh_point_inside(const Vec3f& point) const
 {
     // just use 40% edge limit as tolerance
-    const float tolerance = 0.02;
     const Vec3f transformed_point = trafo * point;
-    float top_z = m_z_world + m_height + tolerance;
-    float bot_z = m_z_world - tolerance;
+    float top_z = m_z_world + m_height + BandTolerance;
+    float bot_z = m_z_world - BandTolerance;
 
     return transformed_point.z() > bot_z && transformed_point.z() < top_z;
 }
 
 bool TriangleSelector::HeightRange::is_edge_inside_cursor(const Triangle& tr, const std::vector<Vertex>& vertices) const
 {
-    float top_z = m_z_world + m_height + EPSILON;
-    float bot_z = m_z_world - EPSILON;
+    // The full depth band uses the same tolerance as the vertex test above. Otherwise a facet whose vertices all
+    // sit just outside the band edge is rejected here even though is_mesh_point_inside() would accept them.
+    const float tolerance = m_full_depth ? BandTolerance : float(EPSILON);
+    float top_z = m_z_world + m_height + tolerance;
+    float bot_z = m_z_world - tolerance;
     std::array<Vec3f, 3> pts;
     for (int i = 0; i < 3; ++i) {
         pts[i] = vertices[tr.verts_idxs[i]].v;

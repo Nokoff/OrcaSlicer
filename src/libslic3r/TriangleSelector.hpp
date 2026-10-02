@@ -59,6 +59,8 @@ public:
         // BBS
         HEIGHT_RANGE,
         GAP_FILL,
+        // Orca: height band that paints every facet inside it, internal shells and inner walls included.
+        HEIGHT_RANGE_DEEP,
     };
 
     struct ClippingPlane
@@ -123,9 +125,9 @@ public:
                 return std::make_unique<TriangleSelector::Circle>(center, camera_pos, cursor_radius, trafo_matrix, clipping_plane);
         }
 
-        static std::unique_ptr<Cursor> cursor_factory(float z_world, const Vec3f& camera_pos, const float height, const Transform3d& trafo_matrix, const ClippingPlane& clipping_plane)
+        static std::unique_ptr<Cursor> cursor_factory(float z_world, const Vec3f& camera_pos, const float height, const Transform3d& trafo_matrix, const ClippingPlane& clipping_plane, bool full_depth = false)
         {
-            return std::make_unique<TriangleSelector::HeightRange>(z_world, camera_pos, height, trafo_matrix, clipping_plane);
+            return std::make_unique<TriangleSelector::HeightRange>(z_world, camera_pos, height, trafo_matrix, clipping_plane, full_depth);
         }
 
     protected:
@@ -193,9 +195,14 @@ public:
     public:
         HeightRange() = delete;
         // BBS: set cursor_radius to 0.1 for high smooth edge
-        explicit HeightRange(float z_world_, const Vec3f& source_, float height_, const Transform3d& trafo_, const ClippingPlane& clipping_plane_)
-            : SinglePointCursor(Vec3f(0.f, 0.f, 0.f), source_, 1.f, trafo_, clipping_plane_), m_z_world(z_world_), m_height(height_) {}
+        // Orca: a full depth band tests every facet of the mesh against the band on its own. It does not depend on
+        // mesh connectivity, facet orientation, the clipping plane or the overhang filter, so internal shells,
+        // inner walls and cut caps are painted exactly like the outer skin.
+        explicit HeightRange(float z_world_, const Vec3f& source_, float height_, const Transform3d& trafo_, const ClippingPlane& clipping_plane_, bool full_depth_ = false)
+            : SinglePointCursor(Vec3f(0.f, 0.f, 0.f), source_, 1.f, trafo_, clipping_plane_), m_z_world(z_world_), m_height(height_), m_full_depth(full_depth_) {}
         ~HeightRange() override = default;
+
+        bool is_full_depth() const { return m_full_depth; }
 
         bool is_pointer_in_triangle(const Vec3f& p1, const Vec3f& p2, const Vec3f& p3) const override;
         bool is_mesh_point_inside(const Vec3f& point) const override;
@@ -205,8 +212,13 @@ public:
             return true;
         }
     private:
+        // Tolerance of the band edges. Facets lying flat on a band edge (cut caps, floors of internal cavities)
+        // must count as inside, and the facet and vertex tests have to agree on that.
+        static constexpr float BandTolerance = 0.02f;
+
         float m_z_world;
         float m_height;
+        bool  m_full_depth;
     };
 
     class Capsule3D : public DoublePointCursor
@@ -376,6 +388,22 @@ public:
     // The operation may merge split triangles if they are being assigned the same color.
     void seed_fill_apply_on_triangles(EnforcerBlockerType new_state);
 
+    // Orca: despeckle. Every connected region of one state whose area is at most max_area is repainted with the state
+    // that dominates the surface around it: all triangles of other states within blend_radius of the region, in every
+    // direction, vote for their state with their area, weighted down with their distance. A dot or a line surrounded by
+    // green turns green. Regions with no neighbor of another state (a small separate painted part) are left alone.
+    // Areas and distances are measured after applying the linear part of the given transformation, so they are in world
+    // units. Repeats until nothing changes. Returns the number of regions that were repainted.
+    int remove_small_regions(float max_area, float blend_radius, const Transform3d &trafo);
+
+    // Orca: smooth edges. Rounds off the jagged borders between painted regions. The triangles within radius of a border
+    // are first split into small ones, then each of them takes the state that dominates the surface around it within
+    // radius (the vote of a triangle is its area, weighted down with its distance, and the walk follows the surface so
+    // it never leaks through a thin wall). Corners get rounded, and tabs and notches narrower than about the radius
+    // disappear. Distances are measured after applying the linear part of the given transformation, so they are in world
+    // units. Returns the number of triangles that changed state.
+    int smooth_boundaries(float radius, const Transform3d &trafo);
+
     // Painting data saved before an operation replaces a volume's mesh.
     struct SavedPainting
     {
@@ -482,6 +510,11 @@ protected:
     };
 
     void append_touching_subtriangles(int itriangle, int vertexi, int vertexj, std::vector<int>& touching_subtriangles_out) const;
+    // All unsplit triangles sharing an edge, or a part of it, with the given unsplit triangle.
+    std::vector<int> get_touching_leaf_triangles(int facet_idx, const Vec3i32 &neighbors, const Vec3i32 &neighbors_propagated) const;
+    // Splits the unsplit triangles of the tree under facet_idx for which should_split() holds, until none is left or the
+    // triangles are shorter than the edge limit. Uses m_cursor to decide how the edge length is measured.
+    void refine_triangle_recursive(int facet_idx, const Vec3i32 &neighbors, const std::function<bool(int)> &should_split);
     bool verify_triangle_neighbors(const Triangle& tr, const Vec3i32& neighbors) const;
 
 

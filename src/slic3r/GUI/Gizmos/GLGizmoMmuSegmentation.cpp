@@ -252,6 +252,11 @@ bool GLGizmoMmuSegmentation::on_init()
 
     m_desc["height_range_caption"] = ctrl + _L("Mouse wheel");
     m_desc["height_range"]         = _L("Height range");
+    m_desc["deep_height_range"]    = _L("Full depth height range");
+    m_desc["deep_height_range_tooltip"] = _L("Paint a band of the model around the cursor height, all the way through: outer skin, inner walls and "
+                                             "separate internal shells alike, whatever is connected to what and regardless of which side faces the "
+                                             "camera. Use it to replace colors that are stuck on internal geometry. Ctrl + mouse wheel changes the "
+                                             "band thickness.");
 
     //add toggle wire frame hint
     m_desc["toggle_wireframe_caption"]        = alt + shift + _L("Enter");
@@ -275,6 +280,23 @@ bool GLGizmoMmuSegmentation::on_init()
     m_desc["auto_paint_tooltip"]  = _L("Replace the current painting by detecting natural parts from concave seams and modeled "
                                         "creases, then distribute the selected colors across those parts. Higher detail keeps "
                                         "smaller parts separate.");
+
+    // Despeckle descriptions
+    m_desc["speck_remove"]         = _L("Remove specks");
+    m_desc["speck_size"]           = _L("Speck size");
+    m_desc["speck_blend_radius"]   = _L("Blend radius");
+    m_desc["speck_tooltip"]        = _L("Merge small stray patches of color into the color mostly around them, on the whole object. "
+                                        "Every patch of one color up to the given area is repainted with the color that dominates the "
+                                        "surface around it, in every direction, within the blend radius. Nearer and larger areas "
+                                        "count for more. Separate painted parts without any neighbor are kept.");
+
+    // Smooth edges descriptions
+    m_desc["smooth_edges"]         = _L("Smooth edges");
+    m_desc["smooth_radius"]        = _L("Smooth radius");
+    m_desc["smooth_edges_tooltip"] = _L("Round off the jagged borders between colors, on the whole object. The surface along every border "
+                                        "is refined, and each piece then takes the color that dominates the area around it within the "
+                                        "smooth radius. Corners get rounded, and tabs and notches narrower than about the radius "
+                                        "disappear. Use a small radius to keep fine details.");
 
     init_extruders_data();
 
@@ -369,6 +391,9 @@ bool GLGizmoMmuSegmentation::on_key_down_select_tool_type(int keyCode) {
     case 'M':
         m_current_tool = ImGui::MagicFillButtonIcon;
         break;
+    case 'D':
+        m_current_tool = ImGui::DeepHeightRangeIcon;
+        break;
     default:
         return false;
         break;
@@ -451,8 +476,11 @@ void GLGizmoMmuSegmentation::show_tooltip_information(float caption_max, float x
 
         std::vector<std::string> tip_items;
         switch (m_tool_type) {
-            case ToolType::BRUSH: 
-                tip_items = {"paint", "erase", "cursor_size", "clipping_of_view", "toggle_wireframe"};
+            case ToolType::BRUSH:
+                if (m_cursor_type == TriangleSelector::CursorType::HEIGHT_RANGE || m_cursor_type == TriangleSelector::CursorType::HEIGHT_RANGE_DEEP)
+                    tip_items = {"paint", "erase", "height_range", "clipping_of_view", "toggle_wireframe"};
+                else
+                    tip_items = {"paint", "erase", "cursor_size", "clipping_of_view", "toggle_wireframe"};
                 break;
             case ToolType::BUCKET_FILL: 
                 tip_items = {"paint", "erase", "smart_fill_angle", "clipping_of_view", "toggle_wireframe"};
@@ -479,7 +507,7 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
 {
     if (!m_c->selection_info()->model_object()) return;
 
-    const float approx_height = m_imgui->scaled(22.0f);
+    const float approx_height = m_imgui->scaled(31.0f);
     y = std::min(y, bottom_limit - approx_height);
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always);
 
@@ -535,6 +563,8 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
     window_width = std::max(window_width, buttons_width);
     window_width = std::max(window_width, auto_paint_width);
     window_width = std::max(window_width, max_filament_items_per_line * filament_item_width + +m_imgui->scaled(0.5f));
+    // The row of tool buttons: eight tools, spaced the way the button loop below places them.
+    window_width = std::max(window_width, 8.f * (empty_button_width + m_imgui->scaled(1.75f)) + m_imgui->scaled(1.5f));
 
     const float sliders_width = m_imgui->scaled(7.0f);
     const float drag_left_width = ImGui::GetStyle().WindowPadding.x + sliders_width - space_size;
@@ -753,20 +783,62 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
                          max_tooltip_width);
     ImGui::Separator();
 
+    ImGui::AlignTextToFramePadding();
+    m_imgui->text(m_desc.at("speck_size"));
+    ImGui::SameLine(sliders_left_width);
+    ImGui::PushItemWidth(sliders_width);
+    m_imgui->bbl_slider_float_style("##speck_max_area", &m_speck_max_area, SpeckAreaMin, SpeckAreaMax, "%.2f mm^2", 1.f, true);
+    ImGui::SameLine(drag_left_width + sliders_left_width);
+    ImGui::PushItemWidth(1.5f * slider_icon_width);
+    ImGui::BBLDragFloat("##speck_max_area_input", &m_speck_max_area, 0.05f, 0.0f, 0.0f, "%.2f");
+    m_speck_max_area = std::clamp(m_speck_max_area, SpeckAreaMin, SpeckAreaMax);
+
+    ImGui::AlignTextToFramePadding();
+    m_imgui->text(m_desc.at("speck_blend_radius"));
+    ImGui::SameLine(sliders_left_width);
+    ImGui::PushItemWidth(sliders_width);
+    m_imgui->bbl_slider_float_style("##speck_blend_radius", &m_speck_blend_radius, SpeckRadiusMin, SpeckRadiusMax, "%.1f mm", 1.f, true);
+    ImGui::SameLine(drag_left_width + sliders_left_width);
+    ImGui::PushItemWidth(1.5f * slider_icon_width);
+    ImGui::BBLDragFloat("##speck_blend_radius_input", &m_speck_blend_radius, 0.05f, 0.0f, 0.0f, "%.2f");
+    m_speck_blend_radius = std::clamp(m_speck_blend_radius, SpeckRadiusMin, SpeckRadiusMax);
+
+    if (m_imgui->button(m_desc.at("speck_remove")))
+        remove_specks();
+    if (ImGui::IsItemHovered())
+        m_imgui->tooltip(m_desc.at("speck_tooltip"), max_tooltip_width);
+    ImGui::Separator();
+
+    ImGui::AlignTextToFramePadding();
+    m_imgui->text(m_desc.at("smooth_radius"));
+    ImGui::SameLine(sliders_left_width);
+    ImGui::PushItemWidth(sliders_width);
+    m_imgui->bbl_slider_float_style("##smooth_radius", &m_smooth_radius, SmoothRadiusMin, SmoothRadiusMax, "%.1f mm", 1.f, true);
+    ImGui::SameLine(drag_left_width + sliders_left_width);
+    ImGui::PushItemWidth(1.5f * slider_icon_width);
+    ImGui::BBLDragFloat("##smooth_radius_input", &m_smooth_radius, 0.05f, 0.0f, 0.0f, "%.2f");
+    m_smooth_radius = std::clamp(m_smooth_radius, SmoothRadiusMin, SmoothRadiusMax);
+
+    if (m_imgui->button(m_desc.at("smooth_edges")))
+        smooth_edges();
+    if (ImGui::IsItemHovered())
+        m_imgui->tooltip(m_desc.at("smooth_edges_tooltip"), max_tooltip_width);
+    ImGui::Separator();
+
     m_imgui->text(m_desc.at("tool_type"));
 
-    std::array<wchar_t, 7> tool_ids;
+    std::array<wchar_t, 8> tool_ids;
     tool_ids = {ImGui::CircleButtonIcon, ImGui::SphereButtonIcon, ImGui::TriangleButtonIcon, ImGui::HeightRangeIcon,
-                ImGui::FillButtonIcon, ImGui::MagicFillButtonIcon, ImGui::GapFillIcon};
-    std::array<wchar_t, 7> icons;
+                ImGui::DeepHeightRangeIcon, ImGui::FillButtonIcon, ImGui::MagicFillButtonIcon, ImGui::GapFillIcon};
+    std::array<wchar_t, 8> icons;
     if (m_is_dark_mode)
         icons = {ImGui::CircleButtonDarkIcon, ImGui::SphereButtonDarkIcon, ImGui::TriangleButtonDarkIcon, ImGui::HeightRangeDarkIcon,
-                 ImGui::FillButtonDarkIcon, ImGui::MagicFillButtonDarkIcon, ImGui::GapFillDarkIcon};
+                 ImGui::DeepHeightRangeDarkIcon, ImGui::FillButtonDarkIcon, ImGui::MagicFillButtonDarkIcon, ImGui::GapFillDarkIcon};
     else
         icons = {ImGui::CircleButtonIcon, ImGui::SphereButtonIcon, ImGui::TriangleButtonIcon, ImGui::HeightRangeIcon,
-                 ImGui::FillButtonIcon, ImGui::MagicFillButtonIcon, ImGui::GapFillIcon};
-    std::array<wxString, 7> tool_tips = {_L("Circle"), _L("Sphere"), _L("Triangle"), _L("Height Range"), _L("Fill"),
-                                         m_desc.at("tool_magic_fill"), _L("Gap Fill")};
+                 ImGui::DeepHeightRangeIcon, ImGui::FillButtonIcon, ImGui::MagicFillButtonIcon, ImGui::GapFillIcon};
+    std::array<wxString, 8> tool_tips = {_L("Circle"), _L("Sphere"), _L("Triangle"), _L("Height Range"), m_desc.at("deep_height_range"),
+                                         _L("Fill"), m_desc.at("tool_magic_fill"), _L("Gap Fill")};
     for (int i = 0; i < tool_ids.size(); i++) {
         std::string  str_label = std::string("");
         std::wstring btn_name  = icons[i] + boost::nowide::widen(str_label);
@@ -800,8 +872,12 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
             }
         }
 
-        if (ImGui::IsItemHovered())
-            m_imgui->tooltip(tool_ids[i] == ImGui::MagicFillButtonIcon ? m_desc.at("magic_fill_tooltip") : tool_tips[i], max_tooltip_width);
+        if (ImGui::IsItemHovered()) {
+            const wxString &tooltip = tool_ids[i] == ImGui::MagicFillButtonIcon   ? m_desc.at("magic_fill_tooltip") :
+                                      tool_ids[i] == ImGui::DeepHeightRangeIcon   ? m_desc.at("deep_height_range_tooltip") :
+                                                                                    tool_tips[i];
+            m_imgui->tooltip(tooltip, max_tooltip_width);
+        }
     }
 
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
@@ -977,6 +1053,41 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
         bool b_clp_dist_input = ImGui::BBLDragFloat("##clp_dist_input", &clp_dist, 0.05f, 0.0f, 0.0f, "%.2f");
 
         if (slider_clp_dist || b_clp_dist_input) { m_c->object_clipper()->set_position_by_ratio(clp_dist, true); }
+    }
+    else if (m_current_tool == ImGui::DeepHeightRangeIcon) {
+        // Same band as the height range tool, but it reaches every facet in the band: see TriangleSelector::HeightRange.
+        m_tool_type   = ToolType::BRUSH;
+        m_cursor_type = TriangleSelector::CursorType::HEIGHT_RANGE_DEEP;
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc["height_range"] + ":");
+        ImGui::SameLine(height_max_width);
+        ImGui::PushItemWidth(sliders_width);
+        std::string format_str = std::string("%.2f") + I18N::translate_utf8("mm", "Heigh range," "Facet in [cursor z, cursor z + height] will be selected.");
+        m_imgui->bbl_slider_float_style("##deep_cursor_height", &m_deep_height, DeepHeightMin, DeepHeightMax, format_str.data(), 1.0f, true);
+        ImGui::SameLine(drag_left_width + height_max_width);
+        ImGui::PushItemWidth(1.5 * slider_icon_width);
+        ImGui::BBLDragFloat("##deep_cursor_height_input", &m_deep_height, 0.05f, 0.0f, 0.0f, "%.2f");
+        m_deep_height = std::clamp(m_deep_height, DeepHeightMin, DeepHeightMax);
+
+        // The band ignores the clipping plane, but sectioning the view is still the way to watch what happens inside.
+        ImGui::Separator();
+        if (m_c->object_clipper()->get_position() == 0.f) {
+            ImGui::AlignTextToFramePadding();
+            m_imgui->text(m_desc.at("clipping_of_view"));
+        } else if (m_imgui->button(m_desc.at("reset_direction"))) {
+            wxGetApp().CallAfter([this]() { m_c->object_clipper()->set_position_by_ratio(-1., false); });
+        }
+
+        auto clp_dist = float(m_c->object_clipper()->get_position());
+        ImGui::SameLine(height_max_width);
+        ImGui::PushItemWidth(sliders_width);
+        bool slider_clp_dist = m_imgui->bbl_slider_float_style("##clp_dist", &clp_dist, 0.f, 1.f, "%.2f", 1.0f, true);
+        ImGui::SameLine(drag_left_width + height_max_width);
+        ImGui::PushItemWidth(1.5 * slider_icon_width);
+        bool b_clp_dist_input = ImGui::BBLDragFloat("##clp_dist_input", &clp_dist, 0.05f, 0.0f, 0.0f, "%.2f");
+
+        if (slider_clp_dist || b_clp_dist_input)
+            m_c->object_clipper()->set_position_by_ratio(clp_dist, true);
     }
     else if (m_current_tool == ImGui::GapFillIcon) {
         m_tool_type = ToolType::GAP_FILL;
@@ -1225,6 +1336,78 @@ void GLGizmoMmuSegmentation::auto_paint_model()
 
     update_model_object();
     m_parent.set_as_dirty();
+}
+
+void GLGizmoMmuSegmentation::smooth_edges()
+{
+    ModelObject* model_object = m_c->selection_info()->model_object();
+    if (model_object == nullptr)
+        return;
+    const int instance_idx = m_parent.get_selection().get_instance_idx();
+    if (instance_idx < 0 || instance_idx >= int(model_object->instances.size()))
+        return;
+    const Transform3d instance_trafo = model_object->instances[instance_idx]->get_transformation().get_matrix_no_offset();
+
+    // The selectors only reach the model object in update_model_object(), so the undo snapshot can wait until something changed.
+    wxBusyCursor busy;
+    int          changed      = 0;
+    size_t       selector_idx = 0;
+    for (const ModelVolume* volume : model_object->volumes) {
+        if (!volume->is_model_part())
+            continue;
+        if (selector_idx >= m_triangle_selectors.size())
+            break;
+        TriangleSelectorGUI& selector = *m_triangle_selectors[selector_idx++];
+        changed += selector.smooth_boundaries(m_smooth_radius, instance_trafo * volume->get_matrix_no_offset());
+        selector.request_update_render_data(true);
+    }
+
+    if (changed == 0) {
+        wxGetApp().plater()->get_notification_manager()->push_notification(_L("No jagged edges found.").ToStdString());
+        return;
+    }
+
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Smooth color edges"), UndoRedo::SnapshotType::GizmoAction);
+    update_model_object();
+    m_parent.set_as_dirty();
+    wxGetApp().plater()->get_notification_manager()->push_notification(_L("Color edges smoothed.").ToStdString());
+}
+
+void GLGizmoMmuSegmentation::remove_specks()
+{
+    ModelObject* model_object = m_c->selection_info()->model_object();
+    if (model_object == nullptr)
+        return;
+    const int instance_idx = m_parent.get_selection().get_instance_idx();
+    if (instance_idx < 0 || instance_idx >= int(model_object->instances.size()))
+        return;
+    const Transform3d instance_trafo = model_object->instances[instance_idx]->get_transformation().get_matrix_no_offset();
+
+    // The selectors only reach the model object in update_model_object(), so the undo snapshot can wait until something changed.
+    int    repainted    = 0;
+    size_t selector_idx = 0;
+    for (const ModelVolume* volume : model_object->volumes) {
+        if (!volume->is_model_part())
+            continue;
+        if (selector_idx >= m_triangle_selectors.size())
+            break;
+        TriangleSelectorGUI& selector = *m_triangle_selectors[selector_idx++];
+        const int            volume_repainted = selector.remove_small_regions(m_speck_max_area, m_speck_blend_radius, instance_trafo * volume->get_matrix_no_offset());
+        if (volume_repainted > 0)
+            selector.request_update_render_data(true);
+        repainted += volume_repainted;
+    }
+
+    if (repainted == 0) {
+        wxGetApp().plater()->get_notification_manager()->push_notification(_L("No specks found.").ToStdString());
+        return;
+    }
+
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Remove color specks"), UndoRedo::SnapshotType::GizmoAction);
+    update_model_object();
+    m_parent.set_as_dirty();
+    wxGetApp().plater()->get_notification_manager()->push_notification(
+        GUI::format(_u8L("Merged %1% speck(s) into the surrounding color."), repainted));
 }
 
 void GLGizmoMmuSegmentation::update_model_object()

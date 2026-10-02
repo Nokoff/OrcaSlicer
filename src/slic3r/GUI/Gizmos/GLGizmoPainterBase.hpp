@@ -264,6 +264,20 @@ protected:
     static constexpr float CursorHeightMax = 8.f;
     static constexpr float CursorHeightStep = 0.2f;
 
+    // Orca: thickness of the full depth height band. The band is centered on the cursor height so a flat face
+    // right at the clicked height is always covered, and it can be much thicker than the regular height range.
+    float m_deep_height = 1.f;
+    static constexpr float DeepHeightMin  = 0.05f;
+    static constexpr float DeepHeightMax  = 50.f;
+    static constexpr float DeepHeightStep = 1.2f; // multiplicative step of the mouse wheel
+
+    bool  is_deep_height_range() const { return m_cursor_type == TriangleSelector::CursorType::HEIGHT_RANGE_DEEP; }
+    bool  is_any_height_range() const { return m_cursor_type == TriangleSelector::CursorType::HEIGHT_RANGE || is_deep_height_range(); }
+    // Bottom of the height band for a cursor hitting the model at the given world height.
+    float height_range_bottom(float hit_z) const { return is_deep_height_range() ? hit_z - 0.5f * m_deep_height : hit_z; }
+    // Thickness of the height band of the active tool.
+    float height_range_thickness() const { return is_deep_height_range() ? m_deep_height : m_cursor_height; }
+
     // For each model-part volume, store status and division of the triangles.
     std::vector<std::unique_ptr<TriangleSelectorGUI>> m_triangle_selectors;
 
