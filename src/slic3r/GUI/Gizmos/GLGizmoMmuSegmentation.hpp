@@ -134,6 +134,7 @@ protected:
     // Filament remap feature
     std::vector<size_t>               m_extruder_remap;      // index → target extruder index
     bool                              m_show_filament_remap_ui = false;
+    bool                              m_remap_entire_plate     = false;
 
     // Orca: replace-only painting. While enabled, painting recolors just m_replace_source_idx.
     bool                              m_replace_only = false;

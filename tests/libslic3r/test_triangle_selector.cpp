@@ -199,6 +199,33 @@ static bool contains_surface_point(const indexed_triangle_set& facets, const Vec
     return false;
 }
 
+TEST_CASE("Filament swaps preserve partial painting and unpainted surfaces", "[TriangleSelector][MMUPaint][FilamentRemap]")
+{
+    const TriangleMesh mesh(single_triangle());
+    TriangleSelector   selector(mesh);
+    selector.deserialize(painted_corner_data(0, 0));
+
+    EnforcerBlockerStateMap state_map;
+    for (size_t state = 0; state < state_map.size(); ++state)
+        state_map[state] = static_cast<EnforcerBlockerType>(state);
+    state_map[1] = EnforcerBlockerType::Extruder2;
+    state_map[2] = EnforcerBlockerType::Extruder1;
+
+    const auto original_unpainted = selector.get_facets(EnforcerBlockerType::NONE);
+    selector.remap_triangle_state(state_map);
+    TriangleSelector restored(mesh);
+    restored.deserialize(selector.serialize());
+    CHECK(contains_surface_point(restored.get_facets(EnforcerBlockerType::Extruder1), Vec3f(0.1f, 0.1f, 0.f)));
+    CHECK_FALSE(restored.has_facets(EnforcerBlockerType::Extruder2));
+    CHECK(restored.get_facets(EnforcerBlockerType::NONE).indices.size() == original_unpainted.indices.size());
+    CHECK(contains_surface_point(restored.get_facets(EnforcerBlockerType::NONE), Vec3f(0.8f, 0.1f, 0.f)));
+
+    // Swap back without merging the two mappings in a sequential replacement.
+    restored.remap_triangle_state(state_map);
+    CHECK(contains_surface_point(restored.get_facets(EnforcerBlockerType::Extruder2), Vec3f(0.1f, 0.1f, 0.f)));
+    CHECK_FALSE(restored.has_facets(EnforcerBlockerType::Extruder1));
+}
+
 TEST_CASE("Painting remap retains a painted corner sharing its parent's edges", "[TriangleSelector][MMUPaint][Remap]")
 {
     const TriangleMesh         mesh(single_triangle());

@@ -1154,7 +1154,7 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
         m_show_filament_remap_ui = !m_show_filament_remap_ui;
         if (m_show_filament_remap_ui) {
             // reset remap to identity on opening
-            m_extruder_remap.resize(m_extruders_colors.size());
+            m_extruder_remap.resize(m_display_filament_ids.size());
             for (size_t i = 0; i < m_extruder_remap.size(); ++i)
                 m_extruder_remap[i] = i;
         }
@@ -1686,6 +1686,17 @@ void GLMmSegmentationGizmo3DScene::finalize_triangle_indices()
 
 void GLGizmoMmuSegmentation::render_filament_remap_ui(float window_width, float max_tooltip_width)
 {
+    m_imgui->text(_L("Apply to"));
+    if (ImGui::RadioButton(_u8L("Selected object").c_str(), !m_remap_entire_plate))
+        m_remap_entire_plate = false;
+    if (ImGui::RadioButton(_u8L("Entire plate").c_str(), m_remap_entire_plate))
+        m_remap_entire_plate = true;
+    if (ImGui::IsItemHovered())
+        m_imgui->tooltip(_L("Remap all color painting on objects on the current plate. Painting is shared by all instances of an object, "
+                            "including copies on other plates. Unpainted surfaces keep their assigned filament."),
+                         max_tooltip_width);
+    ImGui::Separator();
+
     size_t n_extr = std::min((size_t)EnforcerBlockerType::ExtruderMax, m_display_filament_ids.size());
 
     const std::string max_label = std::to_string(std::max<size_t>(n_extr, 1));
@@ -1864,41 +1875,73 @@ void GLGizmoMmuSegmentation::remap_filament_assignments()
 
         const unsigned int src_state = m_display_filament_ids[src];
         const unsigned int dst_state = m_display_filament_ids[dst];
-        if (src_state == 0 || dst_state == 0 || src_state == dst_state)
+        if (src_state == 0 || dst_state == 0 || src_state > MAX_EBT || dst_state > MAX_EBT || src_state == dst_state)
             continue;
 
         state_map[src_state] = static_cast<EnforcerBlockerType>(dst_state);
-        if (src_state == 1)
-            state_map[0] = static_cast<EnforcerBlockerType>(dst_state);
 
         any_change = true;
     }
     if (!any_change)
         return;
 
-    Plater::TakeSnapshot snapshot(wxGetApp().plater(),
-                                  "Remap filament assignments",
-                                  UndoRedo::SnapshotType::GizmoAction);
+    ModelObject* selected_object = m_c->selection_info()->model_object();
+    if (selected_object == nullptr)
+        return;
+    Plater*    plater = wxGetApp().plater();
+    PartPlate* plate  = plater->get_partplate_list().get_selected_plate();
+    if (m_remap_entire_plate && plate == nullptr)
+        return;
+
+    Plater::TakeSnapshot snapshot(plater, _u8L("Remap filament assignments"), UndoRedo::SnapshotType::GizmoAction);
 
     bool updated = false;
-    int idx = -1;
-    ModelObject* mo = m_c->selection_info()->model_object();
-    if (!mo) return;
+    const ModelObjectPtrs& objects = wxGetApp().model().objects;
+    for (size_t obj_idx = 0; obj_idx < objects.size(); ++obj_idx) {
+        ModelObject* object = objects[obj_idx];
+        if (m_remap_entire_plate) {
+            bool on_plate = false;
+            for (size_t instance_idx = 0; instance_idx < object->instances.size(); ++instance_idx)
+                on_plate |= plate->contain_instance(int(obj_idx), int(instance_idx));
+            if (!on_plate)
+                continue;
+        } else if (object != selected_object)
+            continue;
 
-    for (ModelVolume* mv : mo->volumes) {
-        if (!mv->is_model_part()) continue;
-        ++idx;
-        TriangleSelectorGUI* ts = m_triangle_selectors[idx].get();
-        if (!ts) continue;
-        ts->remap_triangle_state(state_map);
-        ts->request_update_render_data(true);
-        updated = true;
+        bool   object_updated = false;
+        size_t mesh_idx       = 0;
+        for (ModelVolume* volume : object->volumes) {
+            if (!volume->is_model_part())
+                continue;
+            if (object == selected_object) {
+                // Use the live selectors to include the current painting session.
+                TriangleSelectorGUI* selector = m_triangle_selectors[mesh_idx].get();
+                selector->remap_triangle_state(state_map);
+                selector->request_update_render_data(true);
+                object_updated |= volume->mmu_segmentation_facets.set(*selector);
+            } else if (!volume->mmu_segmentation_facets.empty()) {
+                TriangleSelector selector(volume->mesh());
+                selector.deserialize(volume->mmu_segmentation_facets.get_data(), false, EnforcerBlockerType::ExtruderMax);
+                selector.remap_triangle_state(state_map);
+                object_updated |= volume->mmu_segmentation_facets.set(selector);
+            }
+            ++mesh_idx;
+        }
+        if (object_updated) {
+            wxGetApp().obj_list()->update_info_items(obj_idx);
+            // Every instance shares the painting; invalidate every affected plate.
+            for (size_t instance_idx = 0; instance_idx < object->instances.size(); ++instance_idx)
+                plater->get_partplate_list().notify_instance_update(int(obj_idx), int(instance_idx));
+            updated = true;
+        }
     }
 
     if (updated) {
-        wxGetApp().plater()->get_notification_manager()->push_notification(
-            _L("Filament remapping finished.").ToStdString());
-        update_model_object();
+        plater->get_notification_manager()->push_notification(_L("Filament remapping finished.").ToStdString());
+        m_parent.post_event(SimpleEvent(EVT_GLCANVAS_SCHEDULE_BACKGROUND_PROCESS));
+        plater->notify_filament_usage_changed();
+        if (Collab::CollabSession* collab = Collab::CollabSessionManager::get(); collab != nullptr)
+            collab->sync_paint_state();
         m_parent.set_as_dirty();
     }
 }
