@@ -2698,7 +2698,9 @@ bool ObjectList::del_subobject_from_object(const int obj_idx, const int idx, con
             Slic3r::GUI::show_error(nullptr, _L("Deleting the last solid part is not allowed."));
             return false;
         }
-        if (object->is_cut() && (volume->is_model_part() || volume->is_negative_volume())) {
+        // Removing a separate text volume does not invalidate the original cut correspondence.
+        if (object->is_cut() &&
+            (volume->is_cut_connector() || (!volume->is_text() && (volume->is_model_part() || volume->is_negative_volume())))) {
             del_from_cut_object(volume->is_cut_connector(), volume->is_model_part(), volume->is_negative_volume());
             // in any case return false to break the deletion
             return false;
@@ -3556,7 +3558,8 @@ void ObjectList::part_selection_changed()
                     update_and_show_settings = true;
 
                     const ModelVolume *volume = (*m_objects)[obj_idx]->volumes[volume_id];
-                    enable_manipulation       = !((*m_objects)[obj_idx]->is_cut() && (volume->is_cut_connector() || volume->is_model_part()));
+                    enable_manipulation       = !((*m_objects)[obj_idx]->is_cut() &&
+                                            (volume->is_cut_connector() || (volume->is_model_part() && !volume->is_text())));
                 }
                 else if (type & itInstance) {
                     og_name = _L("Instance manipulation");
@@ -3954,26 +3957,15 @@ wxDataViewItemArray ObjectList::add_volumes_to_object_in_list(size_t obj_idx, st
                 m_objects_model->SetName(obj_item_name, object_item);
         }
 
-        int volume_idx{-1};
-        auto& ui_and_3d_volume_map = m_objects_model->get_ui_and_3d_volume_map();
-        ui_and_3d_volume_map.clear();
-        int ui_volume_idx = 0;
-        for (const ModelVolume *volume : object->volumes) {
-            ++volume_idx;
+        for (const ModelVolume* volume : object->volumes) {
             if (object->is_cut() && volume->is_cut_connector())
                 continue;
 
-            const wxDataViewItem &vol_item = m_objects_model->AddVolumeChild(
-                object_item,
-                from_u8(volume->name),
-                volume->type(),
-                volume->is_text(),
-                volume->is_svg(),
-                get_warning_icon_name(volume->mesh().stats()),
-                volume->config.has("extruder") ? volume->config.extruder() : 0,
-                false);
-            ui_and_3d_volume_map[ui_volume_idx] = volume_idx;
-            ui_volume_idx++;
+            const wxDataViewItem& vol_item = m_objects_model->AddVolumeChild(object_item, from_u8(volume->name), volume->type(),
+                                                                             volume->is_text(), volume->is_svg(),
+                                                                             get_warning_icon_name(volume->mesh().stats()),
+                                                                             volume->config.has("extruder") ? volume->config.extruder() : 0,
+                                                                             false);
             add_settings_item(vol_item, &volume->config.get());
 
             if (add_to_selection && add_to_selection(volume))
@@ -4002,11 +3994,6 @@ void ObjectList::delete_object_from_list(const size_t obj_idx)
     select_item([this, obj_idx]() { return m_objects_model->Delete(m_objects_model->GetItemById(obj_idx)); });
 }
 
-void ObjectList::delete_volume_from_list(const size_t obj_idx, const size_t vol_idx)
-{
-    select_item([this, obj_idx, vol_idx]() { return m_objects_model->Delete(m_objects_model->GetItemByVolumeId(obj_idx, vol_idx)); });
-}
-
 void ObjectList::delete_instance_from_list(const size_t obj_idx, const size_t inst_idx)
 {
     select_item([this, obj_idx, inst_idx]() { return m_objects_model->Delete(m_objects_model->GetItemByInstanceId(obj_idx, inst_idx)); });
@@ -4028,9 +4015,12 @@ void ObjectList::delete_from_model_and_list(const ItemType type, const int obj_i
         }
     }
     else {
-        del_subobject_from_object(obj_idx, sub_obj_idx, type);
-
-        type == itVolume ? delete_volume_from_list(obj_idx, sub_obj_idx) :
+        const wxDataViewItem volume_item = type == itVolume ? m_objects_model->GetItemByVolumeId(obj_idx, sub_obj_idx) : wxDataViewItem();
+        if (!del_subobject_from_object(obj_idx, sub_obj_idx, type))
+            return;
+        if (type == itVolume)
+            select_item([this, volume_item]() { return m_objects_model->Delete(volume_item); });
+        else
             delete_instance_from_list(obj_idx, sub_obj_idx);
     }
 }
@@ -4060,10 +4050,13 @@ void ObjectList::delete_from_model_and_list(const std::vector<ItemForDelete>& it
                 update_lock_icons_for_model();
         }
         else {
+            const wxDataViewItem volume_item = item->type & itVolume ?
+                                                   m_objects_model->GetItemByVolumeId(item->obj_idx, item->sub_obj_idx) :
+                                                   wxDataViewItem();
             if (!del_subobject_from_object(item->obj_idx, item->sub_obj_idx, item->type))
                 return; //continue;
             if (item->type&itVolume) {
-                m_objects_model->Delete(m_objects_model->GetItemByVolumeId(item->obj_idx, item->sub_obj_idx));
+                m_objects_model->Delete(volume_item);
                 // BBS
 #if 0
                 ModelObject* obj = object(item->obj_idx);
@@ -4685,7 +4678,6 @@ void ObjectList::update_selections()
                 if (object(obj_idx)->volumes[vol_idx]->is_cut_connector())
                     sels.Add(m_objects_model->GetInfoItemByType(m_objects_model->GetItemById(obj_idx), InfoItemType::CutConnectors));
                 else {
-                    vol_idx = m_objects_model->get_real_volume_index_in_ui(vol_idx);
                     sels.Add(m_objects_model->GetItemByVolumeId(obj_idx, vol_idx));
                 }
             }
@@ -4791,8 +4783,9 @@ void ObjectList::update_selections_on_canvas()
         const int obj_idx = m_objects_model->GetObjectIdByItem(item);
 
         if (type == itVolume) {
-            int vol_idx = m_objects_model->GetVolumeIdByItem(item);
-            vol_idx     = m_objects_model->get_real_volume_index_in_3d(vol_idx);
+            const int vol_idx = m_objects_model->GetVolumeIdByItem(item);
+            if (vol_idx < 0)
+                return;
             std::vector<unsigned int> idxs = selection.get_volume_idxs_from_volume(obj_idx, std::max(instance_idx, 0), vol_idx);
             volume_idxs.insert(volume_idxs.end(), idxs.begin(), idxs.end());
         }
@@ -5880,17 +5873,18 @@ void ObjectList::set_extruder_for_selected_items(const int extruder)
          * So, if Instance is selected, get its Object item and change it
          */
         ItemType sel_item_type = m_objects_model->GetItemType(sel_item);
-        wxDataViewItem item = (sel_item_type & itInstance) ? m_objects_model->GetObject(item) : sel_item;
+        wxDataViewItem item          = (sel_item_type & itInstance) ? m_objects_model->GetObject(sel_item) : sel_item;
         ItemType type = m_objects_model->GetItemType(item);
         if (type & itVolume) {
             const int obj_idx = m_objects_model->GetObjectIdByItem(item);
             const int vol_idx = m_objects_model->GetVolumeIdByItem(item);
 
-            if ((obj_idx < m_objects->size()) && (obj_idx < (*m_objects)[obj_idx]->volumes.size())) {
-                auto volume_type = (*m_objects)[obj_idx]->volumes[vol_idx]->type();
-                if (volume_type != ModelVolumeType::MODEL_PART && volume_type != ModelVolumeType::PARAMETER_MODIFIER)
-                    continue;
-            }
+            if (obj_idx < 0 || static_cast<size_t>(obj_idx) >= m_objects->size() || vol_idx < 0 ||
+                static_cast<size_t>(vol_idx) >= (*m_objects)[obj_idx]->volumes.size())
+                continue;
+            auto volume_type = (*m_objects)[obj_idx]->volumes[vol_idx]->type();
+            if (volume_type != ModelVolumeType::MODEL_PART && volume_type != ModelVolumeType::PARAMETER_MODIFIER)
+                continue;
         }
 
         if (type & itLayerRoot)

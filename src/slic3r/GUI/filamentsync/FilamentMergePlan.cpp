@@ -9,21 +9,18 @@ namespace Slic3r {
 
 namespace {
 
-float color_distance(const GUI::FilamentData &lhs, const GUI::FilamentData &rhs)
+float color_distance(const GUI::FilamentData& lhs, const GUI::FilamentData& rhs)
 {
     const wxColour a = GUI::getMainColor(lhs.m_color);
     const wxColour b = GUI::getMainColor(rhs.m_color);
     return delta_e_ciede2000(a.Red(), a.Green(), a.Blue(), b.Red(), b.Green(), b.Blue());
 }
 
-bool is_mergeable(const std::vector<bool> &mergeable, size_t i)
-{
-    return i >= mergeable.size() || mergeable[i];
-}
+bool is_mergeable(const std::vector<bool>& mergeable, size_t i) { return i >= mergeable.size() || mergeable[i]; }
 
 // Turn a "who absorbs whom" table into survivors + merge steps. A filament
 // pointing at itself keeps its slot; anything else becomes one merge.
-void collect(FilamentMergePlan &plan, const std::vector<int> &survivor_of)
+void collect(FilamentMergePlan& plan, const std::vector<int>& survivor_of)
 {
     for (size_t i = 0; i < survivor_of.size(); ++i) {
         if (survivor_of[i] == static_cast<int>(i))
@@ -35,9 +32,9 @@ void collect(FilamentMergePlan &plan, const std::vector<int> &survivor_of)
 
 } // namespace
 
-FilamentMergePlan plan_merge_to_loaded(const std::vector<GUI::FilamentData> &design,
-                                       const std::vector<GUI::FilamentData> &machine,
-                                       const std::vector<bool>              &mergeable)
+FilamentMergePlan plan_merge_to_loaded(const std::vector<GUI::FilamentData>& design,
+                                       const std::vector<GUI::FilamentData>& machine,
+                                       const std::vector<bool>&              mergeable)
 {
     FilamentMergePlan plan;
     const size_t      count = design.size();
@@ -92,15 +89,31 @@ FilamentMergePlan plan_merge_to_loaded(const std::vector<GUI::FilamentData> &des
     return plan;
 }
 
-FilamentMergePlan plan_merge_similar(const std::vector<GUI::FilamentData> &design,
+FilamentMergePlan plan_merge_similar(const std::vector<GUI::FilamentData>& design,
                                      float                                 max_delta_e,
                                      bool                                  require_same_type,
-                                     const std::vector<bool>              &mergeable)
+                                     const std::vector<bool>&              mergeable,
+                                     const std::vector<int>&               manual_targets)
 {
     FilamentMergePlan   plan;
     const size_t        count = design.size();
     std::vector<int>    survivor_of(count, -1);
     std::vector<size_t> representatives;
+
+    std::vector<int>  targets(count, -1);
+    std::vector<bool> forced_survivors(count, false);
+    for (size_t i = 0; i < count; ++i) {
+        const int target = i < manual_targets.size() ? manual_targets[i] : -1;
+        if (!is_mergeable(mergeable, i) || target < 0 || target >= static_cast<int>(count))
+            continue;
+        if (require_same_type && design[i].m_type != design[target].m_type)
+            continue;
+        // A destination must not itself have a manual outgoing merge.
+        if (static_cast<size_t>(target) < manual_targets.size() && manual_targets[target] >= 0 && manual_targets[target] != target)
+            continue;
+        targets[i]               = target;
+        forced_survivors[target] = true;
+    }
 
     for (size_t i = 0; i < count; ++i) {
         if (!is_mergeable(mergeable, i)) {
@@ -109,6 +122,16 @@ FilamentMergePlan plan_merge_similar(const std::vector<GUI::FilamentData> &desig
             survivor_of[i] = static_cast<int>(i);
             representatives.push_back(i);
             plan.pinned.push_back(i);
+            continue;
+        }
+
+        if (forced_survivors[i] || targets[i] == static_cast<int>(i)) {
+            survivor_of[i] = static_cast<int>(i);
+            representatives.push_back(i);
+            continue;
+        }
+        if (targets[i] >= 0) {
+            survivor_of[i] = targets[i];
             continue;
         }
 

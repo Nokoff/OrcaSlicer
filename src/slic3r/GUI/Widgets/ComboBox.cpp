@@ -48,6 +48,11 @@ ComboBox::ComboBox(wxWindow *parent,
                       style | wxTE_PROCESS_ENTER);
     drop.Create(this, style & DD_STYLE_MASK);
 
+    Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        drop.Invalidate();
+        event.Skip();
+    });
+
     if (style & wxCB_READONLY) {
         GetTextCtrl()->Hide();
         TextInput::SetFont(Label::Body_14);

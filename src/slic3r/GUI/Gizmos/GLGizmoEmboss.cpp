@@ -1,4 +1,5 @@
 #include "GLGizmoEmboss.hpp"
+#include "slic3r/Utils/ModelVolumeUtils.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
@@ -395,7 +396,7 @@ ModelVolumePtrs prepare_volumes_to_slice(const ModelVolume &mv)
     result.reserve(volumes.size());
     for (ModelVolume *volume : volumes) {
         // only part could be surface for volumes
-        if (!volume->is_model_part())
+        if (!is_emboss_surface(*volume))
             continue;
 
         // is selected volume
@@ -487,13 +488,7 @@ bool GLGizmoEmboss::init_create(ModelVolumeType volume_type)
         return false;
     }
 
-    // Check can't be inside is_activable() cause crash
-    // steps to reproduce: start App -> key 't' -> key 'delete'
-    if (wxGetApp().obj_list()->has_selected_cut_object()) {
-        BOOST_LOG_TRIVIAL(error) << "Can't create text on cut object";
-        return false;
-    }
-
+    // Text is added as a separate volume, leaving cut parts and connectors intact.
     m_style_manager.discard_style_changes();
 
     // set default text

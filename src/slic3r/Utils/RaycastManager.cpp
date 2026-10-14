@@ -1,4 +1,5 @@
 #include "RaycastManager.hpp"
+#include "ModelVolumeUtils.hpp"
 #include <utility>
 
 #include "slic3r/GUI/GLCanvas3D.hpp"
@@ -182,7 +183,7 @@ std::optional<RaycastManager::Hit> RaycastManager::closest_hit(const Vec3d &poin
         std::vector<AABBMesh::hit_result> hits_neg = mesh->query_ray_hits(point_negative, -mesh_direction);
         hits.insert(hits.end(), std::make_move_iterator(hits_neg.begin()), std::make_move_iterator(hits_neg.end()));
         for (const AABBMesh::hit_result &hit : hits) { 
-            Vec3d diff = mesh_point - hit.position();
+            Vec3d diff = point - transformation * hit.position();
             double squared_distance = diff.squaredNorm();
             if (closest.has_value() &&
                 closest->squared_distance < squared_distance)
@@ -202,19 +203,12 @@ std::optional<RaycastManager::ClosePoint> RaycastManager::closest(const Vec3d &p
             continue;
         const AABBMesh *mesh = ::get_mesh(m_meshes, volume_id);
         if (mesh == nullptr) continue;
-        Transform3d tr_inv = transformation.inverse();
-        Vec3d mesh_point = tr_inv * point;
-                
-        int   face_idx = 0;
-        Vec3d closest_point;
-        Vec3d pointd = point.cast<double>();
-        mesh->squared_distance(pointd, face_idx, closest_point);
-
-        double squared_distance = (mesh_point - closest_point).squaredNorm();
+        const VolumeClosestPoint result           = closest_point_on_volume(*mesh, transformation, point);
+        const double             squared_distance = result.squared_distance;
         if (closest.has_value() && closest->squared_distance < squared_distance)
             continue;
 
-        closest = ClosePoint{key, closest_point, squared_distance};
+        closest = ClosePoint{key, result.point, squared_distance};
     }
     return closest;
 }
@@ -366,7 +360,7 @@ RaycastManager::AllowVolumes create_condition(const ModelVolumePtrs &volumes, co
         allowed_volumes_id.reserve(volumes.size() - 1);
         for (const ModelVolume *v : volumes) {
             // drag only above part not modifiers or negative surface
-            if (!v->is_model_part())
+            if (!is_emboss_surface(*v))
                 continue;
 
             // skip actual selected object

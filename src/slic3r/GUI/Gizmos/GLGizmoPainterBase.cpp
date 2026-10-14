@@ -888,7 +888,7 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
                 m_triangle_selectors[mesh_idx]->select_patch(int(phr.first_facet_idx), std::move(cursor), new_state, trafo_matrix_not_translate,
                     m_triangle_splitting_enabled, m_paint_on_overhangs_only ? m_highlight_by_angle_threshold_deg : 0.f);
 
-                m_triangle_selectors[mesh_idx]->request_update_render_data(true);
+                m_triangle_selectors[mesh_idx]->request_update_render_data(true, false);
                 if (collab != nullptr)
                     collab->paint_progress({collab_obj_idx, mesh_idx}, *m_triangle_selectors[mesh_idx]);
                 m_last_mouse_click = _mouse_position;
@@ -979,7 +979,7 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
                 }
             }
 
-            m_triangle_selectors[mesh_idx]->request_update_render_data(true);
+            m_triangle_selectors[mesh_idx]->request_update_render_data(true, false);
 
             if (collab != nullptr) {
                 collab->paint_progress({collab_obj_idx, mesh_idx}, *m_triangle_selectors[mesh_idx]);
@@ -1429,11 +1429,13 @@ float TriangleSelectorPatch::gap_area = TriangleSelectorPatch::GapAreaMin;
 
 void TriangleSelectorPatch::render(ImGuiWrapper* imgui, const Transform3d& matrix)
 {
-    static bool last_show_wireframe = false;
-    if (last_show_wireframe != wxGetApp().plater()->is_show_wireframe()) {
-        last_show_wireframe  = wxGetApp().plater()->is_show_wireframe();
+    const bool using_wireframe = m_need_wireframe && wxGetApp().plater()->is_wireframe_enabled() &&
+                                 wxGetApp().plater()->is_show_wireframe();
+    if (m_render_wireframe != using_wireframe) {
+        m_render_wireframe   = using_wireframe;
         m_update_render_data = true;
         m_paint_changed      = true;
+        m_full_paint_update  = true;
     }
     if (m_update_render_data) {
         update_render_data();
@@ -1457,83 +1459,104 @@ void TriangleSelectorPatch::render(ImGuiWrapper* imgui, const Transform3d& matri
         }
     }
 
-    for (size_t buffer_idx = 0; buffer_idx < m_triangle_patches.size(); ++buffer_idx) {
-        if (this->has_VBOs(buffer_idx)) {
-            const TrianglePatch& patch = m_triangle_patches[buffer_idx];
-            ColorRGBA color;
-            if (patch.is_fragment() && !patch.neighbor_types.empty()) {
-                size_t color_idx = (size_t)*patch.neighbor_types.begin();
-                if (color_idx >= m_ebt_colors.size())
+    if (!m_filter_state) {
+        // Draw chunks of the same color together, setting the shader color once.
+        for (size_t state = 0; state < m_ebt_colors.size(); ++state) {
+            bool color_set = false;
+            for (size_t buffer_idx = state; buffer_idx < m_triangle_patches.size(); buffer_idx += m_ebt_colors.size()) {
+                if (!has_VBOs(buffer_idx))
                     continue;
-                color = m_ebt_colors[color_idx];
-                color.a(0.85);
+                if (!color_set) {
+                    shader->set_uniform("uniform_color", adjust_color_for_rendering(m_ebt_colors[state]));
+                    color_set = true;
+                }
+                render(int(buffer_idx), show_wireframe);
             }
-            else {
-                size_t color_idx = (size_t)patch.type;
-                if (color_idx >= m_ebt_colors.size())
-                    continue;
-                color = m_ebt_colors[color_idx];
-            }
-            //to make black not too hard too see
-            ColorRGBA new_color = adjust_color_for_rendering(color);
-            shader->set_uniform("uniform_color", new_color);
-            this->render(buffer_idx, show_wireframe);
         }
-    }
+    } else
+        for (size_t buffer_idx = 0; buffer_idx < m_triangle_patches.size(); ++buffer_idx) {
+            if (this->has_VBOs(buffer_idx)) {
+                const TrianglePatch& patch = m_triangle_patches[buffer_idx];
+                ColorRGBA            color;
+                if (patch.is_fragment() && !patch.neighbor_types.empty()) {
+                    size_t color_idx = (size_t) *patch.neighbor_types.begin();
+                    if (color_idx >= m_ebt_colors.size())
+                        continue;
+                    color = m_ebt_colors[color_idx];
+                    color.a(0.85);
+                } else {
+                    size_t color_idx = (size_t) patch.type;
+                    if (color_idx >= m_ebt_colors.size())
+                        continue;
+                    color = m_ebt_colors[color_idx];
+                }
+                // to make black not too hard too see
+                ColorRGBA new_color = adjust_color_for_rendering(color);
+                shader->set_uniform("uniform_color", new_color);
+                this->render(buffer_idx, show_wireframe);
+            }
+        }
 
     render_paint_contour(matrix);
 }
 
 void TriangleSelectorPatch::update_triangles_per_type()
 {
-    //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", enter");
-    m_triangle_patches.resize(m_ebt_colors.size());
-    for (int i = 0; i < m_triangle_patches.size(); i++) {
-        auto& patch = m_triangle_patches[i];
-        patch.type = (EnforcerBlockerType)i;
-        patch.triangle_indices.reserve(m_triangles.size() / 3);
+    const size_t chunk_count = (size_t(m_orig_size_indices) + RENDER_CHUNK_SIZE - 1) / RENDER_CHUNK_SIZE;
+    m_triangle_patches.resize(chunk_count * m_ebt_colors.size());
+    m_dirty_render_chunks.assign(chunk_count, false);
+    for (size_t chunk_idx = 0; chunk_idx < chunk_count; ++chunk_idx)
+        update_render_chunk(chunk_idx);
+}
+
+void TriangleSelectorPatch::on_triangle_painted(int facet_idx)
+{
+    const size_t chunk_idx = size_t(facet_idx) / RENDER_CHUNK_SIZE;
+    m_dirty_render_chunks.resize((size_t(m_orig_size_indices) + RENDER_CHUNK_SIZE - 1) / RENDER_CHUNK_SIZE, false);
+    if (!m_dirty_render_chunks[chunk_idx]) {
+        m_dirty_render_chunks[chunk_idx] = true;
+        m_dirty_render_chunk_indices.push_back(chunk_idx);
+    }
+}
+
+void TriangleSelectorPatch::update_render_chunk(size_t chunk_idx)
+{
+    const size_t patch_offset = chunk_idx * m_ebt_colors.size();
+    for (size_t state = 0; state < m_ebt_colors.size(); ++state) {
+        TrianglePatch& patch = m_triangle_patches[patch_offset + state];
+        patch.type           = static_cast<EnforcerBlockerType>(state);
+        patch.patch_vertices.clear();
+        patch.triangle_indices.clear();
+    }
+    const size_t last_facet = std::min((chunk_idx + 1) * RENDER_CHUNK_SIZE, size_t(m_orig_size_indices));
+
+    for (size_t facet_idx = chunk_idx * RENDER_CHUNK_SIZE; facet_idx < last_facet; ++facet_idx)
+        append_triangle_to_patch(int(facet_idx), patch_offset);
+}
+
+void TriangleSelectorPatch::append_triangle_to_patch(int facet_idx, size_t patch_offset)
+{
+    const Triangle& triangle = m_triangles[facet_idx];
+    if (!triangle.valid())
+        return;
+    if (triangle.is_split()) {
+        for (int child_idx = 0; child_idx <= triangle.number_of_split_sides(); ++child_idx)
+            append_triangle_to_patch(triangle.children[child_idx], patch_offset);
+        return;
     }
 
-    bool using_wireframe = (m_need_wireframe && wxGetApp().plater()->is_wireframe_enabled() && wxGetApp().plater()->is_show_wireframe()) ? true : false;
-
-    for (auto& triangle : m_triangles) {
-        if (!triangle.valid() || triangle.is_split())
-            continue;
-
-        int state = (int)triangle.get_state();
-        if (state < 0 || state >= int(m_triangle_patches.size()))
-            continue;
-        auto& patch = m_triangle_patches[state];
-        //patch.triangle_indices.insert(patch.triangle_indices.end(), triangle.verts_idxs.begin(), triangle.verts_idxs.end());
-        for (int i = 0; i < 3; ++i) {
-            int j = triangle.verts_idxs[i];
-            int index = using_wireframe?int(patch.patch_vertices.size()/6) : int(patch.patch_vertices.size()/3);
-            //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: i=%2%, j=%3%, index=%4%, v[%5%,%6%,%7%]")%__LINE__%i%j%index%m_vertices[j].v(0)%m_vertices[j].v(1)%m_vertices[j].v(2);
-            patch.patch_vertices.emplace_back(m_vertices[j].v(0));
-            patch.patch_vertices.emplace_back(m_vertices[j].v(1));
-            patch.patch_vertices.emplace_back(m_vertices[j].v(2));
-            if (using_wireframe) {
-                if (i == 0) {
-                    patch.patch_vertices.emplace_back(1.0);
-                    patch.patch_vertices.emplace_back(0.0);
-                    patch.patch_vertices.emplace_back(0.0);
-                }
-                else if (i == 1) {
-                    patch.patch_vertices.emplace_back(0.0);
-                    patch.patch_vertices.emplace_back(1.0);
-                    patch.patch_vertices.emplace_back(0.0);
-                }
-                else {
-                    patch.patch_vertices.emplace_back(0.0);
-                    patch.patch_vertices.emplace_back(0.0);
-                    patch.patch_vertices.emplace_back(1.0);
-                }
-            }
-            patch.triangle_indices.emplace_back( index);
-        }
-        //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: state=%2%, vertice size=%3%, triangle size %4%")%__LINE__%state%patch.patch_vertices.size()%patch.triangle_indices.size();
+    const size_t state = static_cast<size_t>(triangle.get_state());
+    if (state >= m_ebt_colors.size())
+        return;
+    TrianglePatch& patch  = m_triangle_patches[patch_offset + state];
+    const int      stride = m_render_wireframe ? 6 : 3;
+    for (int i = 0; i < 3; ++i) {
+        const Vec3f& vertex = m_vertices[triangle.verts_idxs[i]].v;
+        patch.triangle_indices.emplace_back(int(patch.patch_vertices.size() / stride));
+        patch.patch_vertices.insert(patch.patch_vertices.end(), {vertex.x(), vertex.y(), vertex.z()});
+        if (m_render_wireframe)
+            patch.patch_vertices.insert(patch.patch_vertices.end(), {i == 0 ? 1.f : 0.f, i == 1 ? 1.f : 0.f, i == 2 ? 1.f : 0.f});
     }
-    //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("exit");
 }
 
 void TriangleSelectorPatch::update_selector_triangles()
@@ -1673,9 +1696,10 @@ void TriangleSelectorPatch::update_triangles_per_patch()
 
 void TriangleSelectorPatch::set_filter_state(bool is_filter_state)
 {
-    if (!m_filter_state && is_filter_state) {
+    if (m_filter_state != is_filter_state) {
         m_filter_state = is_filter_state;
-        this->release_geometry();
+        m_paint_changed     = true;
+        m_full_paint_update = true;
         update_render_data();
     }
 
@@ -1684,25 +1708,27 @@ void TriangleSelectorPatch::set_filter_state(bool is_filter_state)
 
 void TriangleSelectorPatch::update_render_data()
 {
-    //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", m_paint_changed=%1%, m_triangle_patches.size %2%")%m_paint_changed%m_triangle_patches.size();
     if (m_paint_changed || (m_triangle_patches.size() == 0)) {
-        this->release_geometry();
-
-        /*m_patch_vertices.reserve(m_vertices.size() * 3);
-        for (const Vertex& vr : m_vertices) {
-            m_patch_vertices.emplace_back(vr.v.x());
-            m_patch_vertices.emplace_back(vr.v.y());
-            m_patch_vertices.emplace_back(vr.v.z());
+        const size_t chunk_count = (size_t(m_orig_size_indices) + RENDER_CHUNK_SIZE - 1) / RENDER_CHUNK_SIZE;
+        if (m_full_paint_update || m_filter_state || m_triangle_patches.size() != chunk_count * m_ebt_colors.size()) {
+            release_geometry();
+            if (m_filter_state)
+                update_triangles_per_patch();
+            else
+                update_triangles_per_type();
+            finalize_triangle_indices();
+        } else {
+            for (size_t chunk_idx : m_dirty_render_chunk_indices) {
+                update_render_chunk(chunk_idx);
+                const size_t first_patch = chunk_idx * m_ebt_colors.size();
+                finalize_triangle_indices(first_patch, first_patch + m_ebt_colors.size());
+                m_dirty_render_chunks[chunk_idx] = false;
+            }
         }
-        this->finalize_vertices();*/
+        m_dirty_render_chunk_indices.clear();
 
-        if (m_filter_state)
-            update_triangles_per_patch();
-        else
-            update_triangles_per_type();
-        this->finalize_triangle_indices();
-
-        m_paint_changed = false;
+        m_paint_changed     = false;
+        m_full_paint_update = false;
     }
 
     //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", before paint_contour");
@@ -1791,30 +1817,48 @@ void TriangleSelectorPatch::finalize_vertices()
     }*/
 }
 
-void TriangleSelectorPatch::finalize_triangle_indices()
+void TriangleSelectorPatch::finalize_triangle_indices() { finalize_triangle_indices(0, m_triangle_patches.size()); }
+
+void TriangleSelectorPatch::finalize_triangle_indices(size_t first, size_t last)
 {
     m_vertices_VBO_ids.resize(m_triangle_patches.size());
     m_triangle_indices_VBO_ids.resize(m_triangle_patches.size());
     m_triangle_indices_sizes.resize(m_triangle_patches.size());
-    assert(std::all_of(m_triangle_indices_VBO_ids.cbegin(), m_triangle_indices_VBO_ids.cend(), [](const auto& ti_VBO_id) { return ti_VBO_id == 0; }));
 
-    for (size_t buffer_idx = 0; buffer_idx < m_triangle_patches.size(); ++buffer_idx) {
+    for (size_t buffer_idx = first; buffer_idx < last; ++buffer_idx) {
         std::vector<float>& patch_vertices = m_triangle_patches[buffer_idx].patch_vertices;
+        std::vector<int>&   triangle_indices = m_triangle_patches[buffer_idx].triangle_indices;
+        m_triangle_indices_sizes[buffer_idx] = triangle_indices.size();
+        if (triangle_indices.empty()) {
+            // Repainting a complete chunk can empty a color's buffer. Release it
+            // so repeated color changes do not retain a mesh per previous color.
+            if (m_vertices_VBO_ids[buffer_idx] != 0) {
+                glsafe(::glDeleteBuffers(1, &m_vertices_VBO_ids[buffer_idx]));
+                m_vertices_VBO_ids[buffer_idx] = 0;
+            }
+            if (m_triangle_indices_VBO_ids[buffer_idx] != 0) {
+                glsafe(::glDeleteBuffers(1, &m_triangle_indices_VBO_ids[buffer_idx]));
+                m_triangle_indices_VBO_ids[buffer_idx] = 0;
+            }
+            std::vector<float>().swap(patch_vertices);
+            std::vector<int>().swap(triangle_indices);
+            continue;
+        }
         if (!patch_vertices.empty()) {
-            glsafe(::glGenBuffers(1, &m_vertices_VBO_ids[buffer_idx]));
+            if (m_vertices_VBO_ids[buffer_idx] == 0)
+                glsafe(::glGenBuffers(1, &m_vertices_VBO_ids[buffer_idx]));
             glsafe(::glBindBuffer(GL_ARRAY_BUFFER, m_vertices_VBO_ids[buffer_idx]));
-            glsafe(::glBufferData(GL_ARRAY_BUFFER, patch_vertices.size() * sizeof(float), patch_vertices.data(), GL_STATIC_DRAW));
+            glsafe(::glBufferData(GL_ARRAY_BUFFER, patch_vertices.size() * sizeof(float), patch_vertices.data(), GL_DYNAMIC_DRAW));
             glsafe(::glBindBuffer(GL_ARRAY_BUFFER, 0));
             //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: buffer_idx %2%, vertices size %3%, buffer id %4%")%__LINE__%buffer_idx%patch_vertices.size()%m_vertices_VBO_ids[buffer_idx];
             patch_vertices.clear();
         }
 
-        std::vector<int>& triangle_indices = m_triangle_patches[buffer_idx].triangle_indices;
-        m_triangle_indices_sizes[buffer_idx] = triangle_indices.size();
         if (!triangle_indices.empty()) {
-            glsafe(::glGenBuffers(1, &m_triangle_indices_VBO_ids[buffer_idx]));
+            if (m_triangle_indices_VBO_ids[buffer_idx] == 0)
+                glsafe(::glGenBuffers(1, &m_triangle_indices_VBO_ids[buffer_idx]));
             glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_triangle_indices_VBO_ids[buffer_idx]));
-            glsafe(::glBufferData(GL_ELEMENT_ARRAY_BUFFER, triangle_indices.size() * sizeof(int), triangle_indices.data(), GL_STATIC_DRAW));
+            glsafe(::glBufferData(GL_ELEMENT_ARRAY_BUFFER, triangle_indices.size() * sizeof(int), triangle_indices.data(), GL_DYNAMIC_DRAW));
             glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
             //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: buffer_idx %2%, vertices size %3%, buffer id %4%")%__LINE__%buffer_idx%triangle_indices.size()%m_triangle_indices_VBO_ids[buffer_idx];
             triangle_indices.clear();

@@ -30,6 +30,7 @@ public:
                     int selectedIndex = 0,
                     Style style = Style::Boxed);
 
+    // -1 clears the selection (for custom values between presets).
     void setSelected(int index);
     int  getSelected() const;
 

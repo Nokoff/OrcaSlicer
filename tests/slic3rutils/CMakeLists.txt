@@ -39,4 +39,17 @@ if (WIN32)
 endif()
 
 catch_discover_tests(${_TEST_NAME}_tests TEST_PREFIX "${_TEST_NAME}: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})
+
+# Exercise the merge planner without linking the whole GUI application.
+find_package(wxWidgets REQUIRED COMPONENTS core base)
+include(${wxWidgets_USE_FILE})
+add_executable(filament_merge_tests
+    FilamentMergePlan_test.cpp
+    ../../src/slic3r/GUI/filamentsync/FilamentMergePlan.cpp
+    ../../src/slic3r/GUI/filamentsync/FilamentSyncAlgorithm.cpp
+    ../../src/slic3r/Utils/ColorSpaceConvert.cpp
+)
+target_link_libraries(filament_merge_tests PRIVATE ${TEST_LINK_LIBS} ${wxWidgets_LIBRARIES})
+set_property(TARGET filament_merge_tests PROPERTY FOLDER "tests")
+catch_discover_tests(filament_merge_tests TEST_PREFIX "filament_merge: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})
 # add_test(${_TEST_NAME}_tests ${_TEST_NAME}_tests "${CATCH_EXTRA_ARGS} exclude:[NotWorking]")

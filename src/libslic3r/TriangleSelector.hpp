@@ -312,6 +312,7 @@ public:
     // Create new object on a TriangleMesh. The referenced mesh must
     // stay valid, a ptr to it is saved and used.
     explicit TriangleSelector(const TriangleMesh& mesh, float edge_limit = 0.6f);
+    virtual ~TriangleSelector() = default;
 
     // Returns the facet_idx of the unsplit triangle containing the "hit". Returns -1 if the triangle isn't found.
     [[nodiscard]] int select_unsplit_triangle(const Vec3f &hit, int facet_idx) const;
@@ -545,8 +546,22 @@ protected:
     // Orca: states that painting is allowed to overwrite. Empty means no restriction.
     std::vector<EnforcerBlockerType> m_replace_filter;
 
+    // Original triangle indices remain stable when subdivision storage is compacted.
+    // Renderers can use this notification to update only the touched part of a mesh.
+    virtual void on_triangle_painted(int /* facet_idx */) {}
+
     // Private functions:
 private:
+    // Track selected original roots, which stay valid through subdivision and compaction.
+    std::vector<int>  m_seed_fill_roots;
+    std::vector<bool> m_seed_fill_root_flags;
+    void              select_by_seed_fill(int facet_idx);
+    void              clear_seed_fill_recursive(int facet_idx);
+    void              apply_seed_fill_recursive(int facet_idx, EnforcerBlockerType new_state);
+
+    // Reuse brush traversal storage, clearing only the entries visited by a stroke.
+    std::vector<bool> m_brush_visited;
+    std::vector<int>  m_brush_queue;
     // Orca: may a triangle currently in this state be repainted?
     bool may_replace_state(EnforcerBlockerType state) const;
     bool select_triangle(int facet_idx, EnforcerBlockerType type, bool triangle_splitting);

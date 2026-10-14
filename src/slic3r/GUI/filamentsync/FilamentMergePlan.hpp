@@ -45,17 +45,23 @@ struct FilamentMergePlan
 //
 // `mergeable[i] == false` pins filament i: it keeps its own slot and is never
 // merged away. Indices at or beyond mergeable.size() are treated as mergeable.
-FilamentMergePlan plan_merge_to_loaded(const std::vector<GUI::FilamentData> &design,
-                                       const std::vector<GUI::FilamentData> &machine,
-                                       const std::vector<bool>              &mergeable);
+FilamentMergePlan plan_merge_to_loaded(const std::vector<GUI::FilamentData>& design,
+                                       const std::vector<GUI::FilamentData>& machine,
+                                       const std::vector<bool>&              mergeable);
 
 // Cluster filaments whose colours fall within `max_delta_e` (CIEDE2000) of a
 // cluster representative. Filaments are visited in slot order and each joins
 // the closest representative within tolerance, so the lowest slot number of a
 // group is the one that survives.
-FilamentMergePlan plan_merge_similar(const std::vector<GUI::FilamentData> &design,
+//
+// manual_targets uses original indices: -1 (or absent) means automatic, self
+// means keep this slot, and another index forces a same-material merge even
+// outside the tolerance. Explicit destinations always survive. Invalid targets,
+// chains and cycles are ignored, and mixed-filament components remain pinned.
+FilamentMergePlan plan_merge_similar(const std::vector<GUI::FilamentData>& design,
                                      float                                 max_delta_e,
                                      bool                                  require_same_type,
-                                     const std::vector<bool>              &mergeable);
+                                     const std::vector<bool>&              mergeable,
+                                     const std::vector<int>&               manual_targets = {});
 
 } // namespace Slic3r

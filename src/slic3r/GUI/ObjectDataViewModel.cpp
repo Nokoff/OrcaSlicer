@@ -9,6 +9,7 @@
 #include "PartPlate.hpp"
 
 #include "libslic3r/Model.hpp"
+#include "slic3r/Utils/ModelVolumeUtils.hpp"
 
 #include <wx/bmpcbox.h>
 #include <wx/dc.h>
@@ -1340,7 +1341,7 @@ wxDataViewItem ObjectDataViewModel::GetItemByVolumeId(int obj_idx, int volume_id
 
     for (size_t i = 0; i < parent->GetChildCount(); i++) {
         auto child = parent->GetNthChild(i);
-        if (child->m_idx == volume_idx && child->GetType() & itVolume)
+        if ((child->GetType() & itVolume) && GetVolumeIdByItem(wxDataViewItem(child)) == volume_idx)
             return wxDataViewItem(parent->GetNthChild(i));
     }
 
@@ -1447,7 +1448,11 @@ int ObjectDataViewModel::GetObjectIdByItem(const wxDataViewItem& item) const
 
 int ObjectDataViewModel::GetVolumeIdByItem(const wxDataViewItem& item) const
 {
-    return GetIdByItemAndType(item, itVolume);
+    const int visible_index = GetIdByItemAndType(item, itVolume);
+    if (visible_index < 0)
+        return -1;
+    const auto* object_node = static_cast<ObjectDataViewModelNode*>(GetObject(item).GetID());
+    return object_node && object_node->m_model_object ? model_volume_index(*object_node->m_model_object, visible_index) : visible_index;
 }
 
 int ObjectDataViewModel::GetInstanceIdByItem(const wxDataViewItem& item) const
@@ -1914,12 +1919,18 @@ wxDataViewItem ObjectDataViewModel::ReorganizeChildren( const int current_volume
     if (!node_parent)      // happens if item.IsOk()==false
         return ret_item;
 
+    const int current_row = node_parent->m_model_object ? visible_volume_index(*node_parent->m_model_object, current_volume_id) :
+                                                          current_volume_id;
+    const int new_row     = node_parent->m_model_object ? visible_volume_index(*node_parent->m_model_object, new_volume_id) : new_volume_id;
+    if (current_row < 0 || new_row < 0)
+        return ret_item;
+
     size_t shift = GetItemIndexForFirstVolume(node_parent);
 
-    ObjectDataViewModelNode *deleted_node = node_parent->GetNthChild(current_volume_id+shift);
+    ObjectDataViewModelNode* deleted_node = node_parent->GetNthChild(current_row + shift);
     node_parent->GetChildren().Remove(deleted_node);
     ItemDeleted(parent, wxDataViewItem(deleted_node));
-    node_parent->Insert(deleted_node, new_volume_id+shift);
+    node_parent->Insert(deleted_node, new_row + shift);
     ItemAdded(parent, wxDataViewItem(deleted_node));
 
     // If some item has a children, just to add a deleted item is not enough on Linux
@@ -1928,12 +1939,12 @@ wxDataViewItem ObjectDataViewModel::ReorganizeChildren( const int current_volume
 
     //update volume_id value for child-nodes
     auto children = node_parent->GetChildren();
-    int id_frst = current_volume_id < new_volume_id ? current_volume_id : new_volume_id;
-    int id_last = current_volume_id > new_volume_id ? current_volume_id : new_volume_id;
+    int  id_frst  = current_row < new_row ? current_row : new_row;
+    int  id_last  = current_row > new_row ? current_row : new_row;
     for (int id = id_frst; id <= id_last; ++id)
         children[id+shift]->SetIdx(id);
 
-    return wxDataViewItem(node_parent->GetNthChild(new_volume_id+shift));
+    return wxDataViewItem(node_parent->GetNthChild(new_row + shift));
 }
 
 wxDataViewItem ObjectDataViewModel::ReorganizeObjects(  const int current_id, const int new_id)

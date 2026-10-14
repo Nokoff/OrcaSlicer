@@ -1,4 +1,5 @@
 #include "EmbossJob.hpp"
+#include "slic3r/Utils/ModelVolumeUtils.hpp"
 
 #include <stdexcept>
 #include <type_traits>
@@ -1238,7 +1239,7 @@ indexed_triangle_set cut_surface_to_its(const ExPolygons &shapes, const Transfor
         if (&s == biggest)
             continue;
 
-        Transform3d           tr  = s.tr * tr_inv;
+        Transform3d           tr            = volume_to_volume_transform(s.tr, biggest->tr);
         bool        fix_reflected = true;
         indexed_triangle_set &its = itss[itss_index];
         its_transform(its, tr, fix_reflected);
@@ -1380,7 +1381,7 @@ SurfaceVolumeData::ModelSources create_sources(const ModelVolumePtrs &volumes, s
         if (text_volume_id.has_value() && v->id().id == *text_volume_id)
             continue;
         // skip modifiers and negative volumes, ...
-        if (!v->is_model_part())
+        if (!is_emboss_surface(*v))
             continue;
         const TriangleMesh &tm = v->mesh();
         if (tm.empty())
@@ -1470,9 +1471,8 @@ const GLVolume *find_closest(
 
     double center_sq_distance = std::numeric_limits<double>::max();
     for (unsigned int id : indices) {
-        const GLVolume    *gl_volume = selection.get_volume(id);        
-        if (const ModelVolume *volume = get_model_volume(*gl_volume, objects);
-            volume == nullptr || !volume->is_model_part())
+        const GLVolume    *gl_volume = selection.get_volume(id);
+        if (const ModelVolume* volume = get_model_volume(*gl_volume, objects); volume == nullptr || !is_emboss_surface(*volume))
             continue;
         Slic3r::Polygon hull        = CameraUtils::create_hull2d(camera, *gl_volume);
         Vec2d           c           = hull.centroid().cast<double>();

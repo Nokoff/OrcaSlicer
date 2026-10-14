@@ -9,12 +9,11 @@
 
 class Button;
 class wxCheckBox;
+class wxChoice;
+class wxSlider;
 class wxStaticText;
 
-namespace Slic3r
-{
-namespace GUI
-{
+namespace Slic3r { namespace GUI {
 
 class SegmentedToggle;
 class MergePreviewList;
@@ -24,19 +23,18 @@ class MergePreviewList;
 class MergeFilamentsDialog : public wxDialog
 {
 public:
-    enum class Mode
-    {
+    enum class Mode {
         ToLoaded, // collapse onto the filaments loaded on the printer
         Similar,  // collapse filaments that already look alike
     };
 
-    MergeFilamentsDialog(wxWindow                        *parent,
+    MergeFilamentsDialog(wxWindow*                        parent,
                          Mode                             mode,
-                         const std::vector<FilamentData> &design,
-                         const std::vector<FilamentData> &machine,
-                         const std::vector<bool>         &mergeable);
+                         const std::vector<FilamentData>& design,
+                         const std::vector<FilamentData>& machine,
+                         const std::vector<bool>&         mergeable);
 
-    const FilamentMergePlan &plan() const { return m_plan; }
+    const FilamentMergePlan& plan() const { return m_plan; }
 
     // ToLoaded only: whether the surviving slots should also take the colour
     // and material of the loaded filament they were matched to.
@@ -44,6 +42,7 @@ public:
 
 private:
     void recompute();
+    void updateManualEditor();
 
     Mode                      m_mode;
     std::vector<FilamentData> m_design;
@@ -51,15 +50,22 @@ private:
     std::vector<bool>         m_mergeable;
     FilamentMergePlan         m_plan;
 
-    SegmentedToggle  *m_pTolerance   = nullptr;
-    wxCheckBox       *m_pMatchLoaded = nullptr;
-    MergePreviewList *m_pPreview     = nullptr;
-    wxStaticText     *m_pSummary     = nullptr;
-    wxStaticText     *m_pDetail      = nullptr;
-    Button           *m_pMergeBtn    = nullptr;
+    SegmentedToggle*  m_pTolerance   = nullptr;
+    wxCheckBox*       m_pMatchLoaded = nullptr;
+    MergePreviewList* m_pPreview     = nullptr;
+    wxStaticText*     m_pSummary     = nullptr;
+    wxStaticText*     m_pDetail      = nullptr;
+    Button*           m_pMergeBtn    = nullptr;
+
+    wxSlider*        m_pToleranceSlider = nullptr;
+    wxStaticText*    m_pToleranceValue  = nullptr;
+    wxChoice*        m_pSource          = nullptr;
+    wxChoice*        m_pTarget          = nullptr;
+    wxStaticText*    m_pMapping         = nullptr;
+    std::vector<int> m_manualTargets;
+    std::vector<int> m_targetOptions;
 
     int m_toleranceIndex = 1;
 };
 
-} // namespace GUI
-} // namespace Slic3r
+}} // namespace Slic3r::GUI

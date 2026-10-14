@@ -339,7 +339,6 @@ public:
     // Delete object from the list
     void delete_object_from_list();
     void delete_object_from_list(const size_t obj_idx);
-    void delete_volume_from_list(const size_t obj_idx, const size_t vol_idx);
     void delete_instance_from_list(const size_t obj_idx, const size_t inst_idx);
     void delete_from_model_and_list(const ItemType type, const int obj_idx, const int sub_obj_idx);
     void delete_from_model_and_list(const std::vector<ItemForDelete>& items_for_delete);

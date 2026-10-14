@@ -136,7 +136,7 @@ std::optional<Vec3d> calc_surface_offset(const Selection &selection, RaycastMana
         return {};
 
     // Move object on surface
-    auto cond = RaycastManager::SkipVolume(volume->id().id);
+    auto cond = create_condition(volume->get_object()->volumes, volume->id());
     raycast_manager.actualize(*instance, &cond);
 
     Transform3d to_world = world_matrix_fixed(gl_volume, objects);

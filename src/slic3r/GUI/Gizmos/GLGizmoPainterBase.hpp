@@ -42,10 +42,11 @@ public:
     bool         get_wireframe_needed() { return m_need_wireframe; }
 
     // BBS
-    void request_update_render_data(bool paint_changed = false)
+    void request_update_render_data(bool paint_changed = false, bool full_update = true)
     {
         m_update_render_data = true;
         m_paint_changed |= paint_changed;
+        m_full_paint_update |= paint_changed && full_update;
     }
 
     // BBS
@@ -61,7 +62,8 @@ public:
 protected:
     bool m_update_render_data = false;
     // BBS
-    bool m_paint_changed = true;
+    bool m_paint_changed     = true;
+    bool m_full_paint_update = true;
 
     static ColorRGBA get_seed_fill_color(const ColorRGBA &base_color);
 
@@ -101,7 +103,7 @@ class TriangleSelectorPatch : public TriangleSelectorGUI {
 public:
     explicit TriangleSelectorPatch(const TriangleMesh& mesh, const std::vector<ColorRGBA> ebt_colors, float edge_limit = 0.6f)
         : TriangleSelectorGUI(mesh, edge_limit), m_ebt_colors(ebt_colors) {}
-    virtual ~TriangleSelectorPatch() = default;
+    ~TriangleSelectorPatch() override { release_geometry(); }
 
     // Render current selection. Transformation matrices are supposed
     // to be already set.
@@ -112,7 +114,12 @@ public:
     void update_selector_triangles();
     void update_triangles_per_patch();
 
-    void set_ebt_colors(const std::vector<ColorRGBA> ebt_colors) { m_ebt_colors = ebt_colors; }
+    void set_ebt_colors(const std::vector<ColorRGBA> ebt_colors)
+    {
+        if (m_ebt_colors.size() != ebt_colors.size())
+            request_update_render_data(true);
+        m_ebt_colors = ebt_colors;
+    }
     void set_filter_state(bool is_filter_state);
 
     constexpr static float GapAreaMin = 0.f;
@@ -132,6 +139,8 @@ protected:
     // and possibly releasing it if it has been loaded into the VBOs.
     void finalize_triangle_indices();
 
+    void finalize_triangle_indices(size_t first, size_t last);
+
     void clear()
     {
         // BBS
@@ -145,12 +154,14 @@ protected:
             patch.triangle_indices.clear();
         }
         this->m_triangle_patches.clear();
+        m_dirty_render_chunks.clear();
+        m_dirty_render_chunk_indices.clear();
     }
 
     [[nodiscard]] inline bool has_VBOs(size_t triangle_indices_idx) const
     {
         assert(triangle_indices_idx < this->m_triangle_patches.size());
-        return this->m_triangle_indices_VBO_ids[triangle_indices_idx] != 0;
+        return this->m_triangle_indices_VBO_ids[triangle_indices_idx] != 0 && this->m_triangle_indices_sizes[triangle_indices_idx] != 0;
     }
 
     //std::vector<float>          m_patch_vertices;
@@ -171,6 +182,16 @@ protected:
     bool                        m_filter_state = false;
 
 private:
+    // A brush edit rebuilds only the chunks containing touched original triangles.
+    // Subdivision and garbage collection preserve those original triangle indices.
+    static constexpr size_t RENDER_CHUNK_SIZE = 16384;
+    std::vector<bool>       m_dirty_render_chunks;
+    std::vector<size_t>     m_dirty_render_chunk_indices;
+    bool                    m_render_wireframe = false;
+
+    void on_triangle_painted(int facet_idx) override;
+    void update_render_chunk(size_t chunk_idx);
+    void append_triangle_to_patch(int facet_idx, size_t patch_offset);
     void update_render_data();
     void render(int buffer_idx, bool show_wireframe=false);
 };

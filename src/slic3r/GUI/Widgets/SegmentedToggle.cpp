@@ -137,7 +137,7 @@ void SegmentedToggle::applyButtonColors(int index, bool selected)
 
 void SegmentedToggle::setSelected(int index)
 {
-    if (index < 0 || index >= (int)m_buttons.size() || index == m_selectedIndex)
+    if (index < -1 || index >= (int)m_buttons.size() || index == m_selectedIndex)
         return;
 
     applyButtonColors(m_selectedIndex, false);
