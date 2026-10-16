@@ -24919,7 +24919,13 @@ int Plater::delete_plate(int plate_index)
     if (plate_index == -1)
         index = p->partplate_list.get_curr_plate_index();
 
+    if (index < 0 || index >= p->partplate_list.get_plate_count() || p->partplate_list.get_plate_count() <= 1)
+        return -1;
+
     take_snapshot("delete partplate");
+
+    // Plate indices change below, so a pending completion must not continue slicing all plates.
+    p->m_slice_all = false;
 
     // Clear references before PartPlateList::delete_plate destroys the Print.
     clear_slicing_context();
@@ -24955,6 +24961,12 @@ bool Plater::is_background_process_slicing() const
 //BBS: update slicing context
 void Plater::clear_slicing_context()
 {
+    // Cancellation waits for the worker to become idle and removes the Print's
+    // cancel callback. Its pointers must stay valid until that has completed.
+    if (p->background_process.current_print() != nullptr)
+        p->background_process.reset();
+
+    p->preview->update_gcode_result(nullptr);
     p->background_process.set_fff_print(nullptr);
     p->background_process.set_gcode_result(nullptr);
     p->background_process.set_current_plate(nullptr);

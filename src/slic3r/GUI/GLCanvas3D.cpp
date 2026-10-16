@@ -8232,12 +8232,13 @@ void GLCanvas3D::_picking_pass()
         case SceneRaycaster::EType::Bed:
         {
             // BBS: add plate picking logic
-            int plate_hover_id = hit.raycaster_id;
-            if (plate_hover_id >= 0 && plate_hover_id < PartPlateList::MAX_PLATES_COUNT * PartPlate::GRABBER_COUNT) {
-                wxGetApp().plater()->get_partplate_list().set_hover_id(plate_hover_id);
+            int            plate_hover_id = hit.raycaster_id;
+            PartPlateList& plate_list     = wxGetApp().plater()->get_partplate_list();
+            if (plate_hover_id >= 0 && plate_hover_id / PartPlate::GRABBER_COUNT < plate_list.get_plate_count()) {
+                plate_list.set_hover_id(plate_hover_id);
                 m_hover_plate_idxs.emplace_back(plate_hover_id);
             } else {
-                wxGetApp().plater()->get_partplate_list().reset_hover_id();
+                plate_list.reset_hover_id();
             }
             m_gizmos.set_hover_id(-1);
             break;

@@ -4113,9 +4113,15 @@ int PartPlateList::select_plate(int index)
 
 void PartPlateList::set_hover_id(int id)
 {
-	int index = id / PartPlate::GRABBER_COUNT;
-	int sub_hover_id = id % PartPlate::GRABBER_COUNT;
-	m_plate_list[index]->set_hover_id(sub_hover_id);
+    // Picking may still report the removed plate until the scene is rebuilt.
+    if (id < 0 || id / PartPlate::GRABBER_COUNT >= m_plate_list.size()) {
+        reset_hover_id();
+        return;
+    }
+
+    int index        = id / PartPlate::GRABBER_COUNT;
+    int sub_hover_id = id % PartPlate::GRABBER_COUNT;
+    m_plate_list[index]->set_hover_id(sub_hover_id);
 }
 
 void PartPlateList::reset_hover_id()

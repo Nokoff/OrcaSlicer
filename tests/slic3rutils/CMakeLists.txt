@@ -8,7 +8,17 @@ get_filename_component(_TEST_NAME ${CMAKE_CURRENT_LIST_DIR} NAME)
 add_executable(${_TEST_NAME}_tests
     ${_TEST_NAME}_tests_main.cpp
     SnapLogClient_test.cpp
+    PartPlate_test.cpp
+    ../../src/sentry_wrapper/SentryWrapper.cpp
+    ../../src/bury_cfg/bury_point.cpp
+    ../../src/common_func/common_func.cpp
     )
+target_compile_definitions(${_TEST_NAME}_tests PRIVATE BURY_EXPORTS)
+if (MSVC)
+    target_sources(${_TEST_NAME}_tests PRIVATE ../../src/dev-utils/BaseException.cpp ../../src/dev-utils/StackWalker.cpp)
+    set_source_files_properties(../../src/common_func/common_func.cpp PROPERTIES
+        COMPILE_OPTIONS /FI"${CMAKE_CURRENT_SOURCE_DIR}/../../src/slic3r/pchheader.hpp")
+endif()
 
 find_package(JPEG REQUIRED)
 find_package(PNG REQUIRED)
@@ -19,7 +29,10 @@ if(UNIX AND NOT APPLE)
     target_link_options(${_TEST_NAME}_tests PRIVATE "-Wl,--no-as-needed")
 endif()
 if(TARGET libslic3r_gui)
-    target_link_libraries(${_TEST_NAME}_tests PRIVATE libslic3r_gui ${TEST_LINK_LIBS})
+    # BitmapCache.cpp supplies nanoSVG when the full GUI is linked.
+    set(_GUI_TEST_LINK_LIBS ${TEST_LINK_LIBS})
+    list(REMOVE_ITEM _GUI_TEST_LINK_LIBS test_nanosvg_impl)
+    target_link_libraries(${_TEST_NAME}_tests PRIVATE libslic3r_gui ${_GUI_TEST_LINK_LIBS})
 else()
     target_link_libraries(${_TEST_NAME}_tests PRIVATE ${TEST_LINK_LIBS})
 endif()
