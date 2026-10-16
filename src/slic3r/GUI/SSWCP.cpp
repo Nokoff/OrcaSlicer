@@ -7504,19 +7504,16 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
                                     }
                                 }
 
-                                // 查询机器的机型和喷嘴信息
-                                std::shared_ptr<PrintHost> host = nullptr;
-                                wxGetApp().get_connect_host(host);
-
-                                // 设置sn
-
-                                MachineInfo machine_info;
-                                if (SSWCP::query_machine_info(host, machine_info) && !machine_info.model.empty()) {
+                                // This callback already runs on the UI thread. Persist the connected
+                                // device before publishing the device list or replying with success;
+                                // another CallAfter here exposes an all-disconnected list to Print.
+                                MachineInfo                machine_info;
+                                std::shared_ptr<PrintHost> query_host = host;
+                                if (SSWCP::query_machine_info(query_host, machine_info) && !machine_info.model.empty()) {
                                     std::string              machine_type     = machine_info.model;
                                     std::vector<std::string> nozzle_diameters = machine_info.nozzle_diameters;
                                     std::string              device_name      = machine_info.device_name;
-                                    wxGetApp().CallAfter([ip, host, link_mode, machine_type, connect_params, nozzle_diameters, device_name,
-                                                          id, userid, reload_device_view]() {
+                                    {
                                         // 查询成功
                                         DeviceInfo info;
                                         info.ip        = ip;
@@ -7644,9 +7641,9 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
                                                                 flag);
                                             wxGetApp().update_mode();
                                         }
-                                    });
+                                    }
                                 } else {
-                                    wxGetApp().CallAfter([connect_params, ip, host, link_mode, id, userid]() {
+                                    {
                                         // 是否为连接过的设备
                                         DeviceInfo  query_info;
                                         std::string dev_id = connect_params.count("sn") ? connect_params["sn"].get<std::string>() : ip;
@@ -7761,7 +7758,7 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
                                                 }
                                             }
                                         }
-                                    });
+                                    }
                                 }
 
                                 devices = wxGetApp().app_config->get_devices();
