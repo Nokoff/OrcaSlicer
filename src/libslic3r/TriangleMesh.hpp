@@ -193,6 +193,8 @@ private:
 std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its);
 std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its, std::function<void()> throw_on_cancel_callback);
 std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its, const std::vector<bool> &face_mask);
+// Edge ids for just the listed faces (sorted ascending). Returns a compact vector, out[i] corresponding to faces[i].
+std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its, const std::vector<uint32_t> &faces);
 // Having the face neighbors available, assign unique edge IDs to face edges for chaining of polygons over slices.
 std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its, std::vector<Vec3i32> &face_neighbors, bool assign_unbound_edges = false, int *num_edges = nullptr);
 

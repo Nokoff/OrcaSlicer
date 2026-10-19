@@ -63,11 +63,16 @@ std::vector<Polygons>           slice_mesh(
     const MeshSlicingParams          &params,
     std::function<void()>             throw_on_cancel = []{});
 
-// Specialized version for a single slicing plane only, running on a single thread.
+// Specialized version for a single slicing plane only.
 Polygons                        slice_mesh(
     const indexed_triangle_set       &mesh,
     const float                       plane_z,
     const MeshSlicingParams          &params);
+
+namespace detail {
+// Original serial single plane slicer, for regression tests only.
+Polygons slice_mesh_single_plane_reference(const indexed_triangle_set &mesh, const float plane_z, const MeshSlicingParams &params);
+}
 
 std::vector<ExPolygons>         slice_mesh_ex(
     const indexed_triangle_set       &mesh,
