@@ -2916,6 +2916,7 @@ void GLCanvas3D::render(bool only_init)
     m_in_render = true;
     Slic3r::ScopeGuard in_render_guard([this]() { m_in_render = false; });
     (void)in_render_guard;
+    const auto frame_start = std::chrono::steady_clock::now();
 
     if (m_canvas == nullptr)
         return;
@@ -3113,6 +3114,23 @@ void GLCanvas3D::render(bool only_init)
         imgui.text("Max texture size:");
         ImGui::SameLine();
         imgui.text(std::to_string(OpenGLManager::get_gl_info().get_max_tex_size()));
+        ImGui::Separator();
+        const OpenGLManager::GLInfo& gl_info = OpenGLManager::get_gl_info();
+        imgui.text("GL renderer: " + gl_info.get_renderer());
+        imgui.text("GL vendor: " + gl_info.get_vendor());
+        imgui.text("GL version: " + gl_info.get_version());
+        imgui.text("Last frame CPU time: " + Slic3r::format("%.2f ms", m_render_stats.get_last_frame_cpu_ms()));
+        if (dynamic_cast<GLGizmoPainterBase*>(get_gizmos_manager().get_current()) != nullptr) {
+            const PaintingStats& stats = PaintingStats::get();
+            ImGui::Separator();
+            imgui.text("Painting:");
+            imgui.text("  Last paint event: " + Slic3r::format("%.2f ms", stats.last_event_ms));
+            imgui.text("  Last render data update: " + Slic3r::format("%.2f ms", stats.last_render_update_ms));
+            imgui.text("  Chunks rebuilt: " + std::to_string(stats.chunks_rebuilt));
+            imgui.text("  Stroke end, undo snapshot: " + Slic3r::format("%.2f ms", stats.last_snapshot_ms));
+            imgui.text("  Stroke end, model update: " + Slic3r::format("%.2f ms", stats.last_model_update_ms));
+            imgui.text("  Leaf triangles: " + std::to_string(stats.leaf_triangles));
+        }
         imgui.end();
     }
 
@@ -3184,6 +3202,7 @@ void GLCanvas3D::render(bool only_init)
 
     wxGetApp().imgui()->render();
 
+    m_render_stats.set_last_frame_cpu_ms(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frame_start).count());
     m_canvas->SwapBuffers();
     m_render_stats.increment_fps_counter();
 }
@@ -4710,10 +4729,14 @@ void GLCanvas3D::on_key(wxKeyEvent& evt)
         if (!m_gizmos.on_key(evt)) {
             if (evt.GetEventType() == wxEVT_KEY_UP) {
                 if (evt.ShiftDown() && evt.ControlDown() && keyCode == WXK_SPACE) {
-#if !BBL_RELEASE_TO_PUBLIC
-                    wxGetApp().plater()->toggle_render_statistic_dialog();
-                    m_dirty = true;
+#if BBL_RELEASE_TO_PUBLIC
+                    // Orca: public builds show the render statistics in Develop mode only.
+                    if (wxGetApp().app_config->get_bool("developer_mode"))
 #endif
+                    {
+                        wxGetApp().plater()->toggle_render_statistic_dialog();
+                        m_dirty = true;
+                    }
                 } else if ((evt.ShiftDown() && evt.ControlDown() && keyCode == WXK_RETURN) ||
                     (evt.ShiftDown() && evt.AltDown() && keyCode == WXK_RETURN)) {
                     wxGetApp().plater()->toggle_show_wireframe();

@@ -13969,7 +13969,10 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
         this->partplate_list.update_slice_context_to_current_plate(background_process);
         this->preview->update_gcode_result(partplate_list.get_current_slice_result());
     }
+    const auto apply_start = std::chrono::steady_clock::now();
     Print::ApplyStatus invalidated = background_process.apply(this->model, wxGetApp().preset_bundle->full_config());
+    BOOST_LOG_TRIVIAL(info) << "Background process apply took "
+                               << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - apply_start).count() << " ms";
     notify_filament_compatibility_after_apply();
 
     if ((invalidated == Print::APPLY_STATUS_CHANGED) || (invalidated == Print::APPLY_STATUS_INVALIDATED))

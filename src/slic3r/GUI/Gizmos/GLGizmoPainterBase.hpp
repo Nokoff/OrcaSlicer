@@ -23,6 +23,24 @@ struct Camera;
 class GLGizmoMmuSegmentation;
 class Selection;
 
+// Orca: painting timings shown in the render statistics overlay (Develop mode, Ctrl+Shift+Space).
+struct PaintingStats
+{
+    double last_event_ms         = 0.;
+    double last_render_update_ms = 0.;
+    // Stroke end: the undo snapshot, then storing the painting in the model.
+    double last_snapshot_ms      = 0.;
+    double last_model_update_ms  = 0.;
+    size_t chunks_rebuilt        = 0;
+    size_t leaf_triangles        = 0;
+
+    static PaintingStats& get()
+    {
+        static PaintingStats stats;
+        return stats;
+    }
+};
+
 enum class PainterGizmoType {
     FDM_SUPPORTS,
     SEAM,
@@ -79,6 +97,7 @@ private:
 
 protected:
     GLModel                      m_paint_contour;
+    uint64_t                     m_paint_contour_revision = std::numeric_limits<uint64_t>::max();
 
     void update_paint_contour();
     void render_paint_contour(const Transform3d& matrix);
@@ -90,6 +109,8 @@ protected:
 struct TrianglePatch {
     std::vector<float>  patch_vertices;
     std::vector<int> triangle_indices;
+    // Floats per vertex in patch_vertices: 3 for positions, 6 with barycentric coordinates for the wireframe.
+    int vertex_stride = 3;
     std::vector<int> facet_indices;
     EnforcerBlockerType type = EnforcerBlockerType::NONE;
     std::set<EnforcerBlockerType> neighbor_types;
@@ -145,8 +166,7 @@ protected:
     {
         // BBS
         this->m_vertices_VBO_ids.clear();
-        this->m_triangle_indices_VBO_ids.clear();
-        this->m_triangle_indices_sizes.clear();
+        this->m_vertex_counts.clear();
 
         for (TrianglePatch& patch : this->m_triangle_patches)
         {
@@ -161,7 +181,7 @@ protected:
     [[nodiscard]] inline bool has_VBOs(size_t triangle_indices_idx) const
     {
         assert(triangle_indices_idx < this->m_triangle_patches.size());
-        return this->m_triangle_indices_VBO_ids[triangle_indices_idx] != 0 && this->m_triangle_indices_sizes[triangle_indices_idx] != 0;
+        return this->m_vertices_VBO_ids[triangle_indices_idx] != 0 && this->m_vertex_counts[triangle_indices_idx] != 0;
     }
 
     //std::vector<float>          m_patch_vertices;
@@ -169,13 +189,12 @@ protected:
 
     // When the triangle indices are loaded into the graphics card as Vertex Buffer Objects,
     // the above mentioned std::vectors are cleared and the following variables keep their original length.
-    std::vector<size_t>         m_triangle_indices_sizes;
+    std::vector<size_t>         m_vertex_counts;
 
     // IDs of the Vertex Array Objects, into which the geometry has been loaded.
     // Zero if the VBOs are not sent to GPU yet.
     //unsigned int                m_vertices_VBO_id{ 0 };
     std::vector<unsigned int>   m_vertices_VBO_ids;
-    std::vector<unsigned int>   m_triangle_indices_VBO_ids;
 
     std::vector<ColorRGBA> m_ebt_colors;
 
@@ -184,9 +203,16 @@ protected:
 private:
     // A brush edit rebuilds only the chunks containing touched original triangles.
     // Subdivision and garbage collection preserve those original triangle indices.
-    static constexpr size_t RENDER_CHUNK_SIZE = 16384;
+    static constexpr size_t RENDER_CHUNK_SIZE = 8192;
+    // Orca: chunks hold nearby original facets, see build_render_chunks().
+    std::vector<uint32_t>         m_facet_chunks;
+    std::vector<std::vector<int>> m_chunk_facets;
+    void                          build_render_chunks();
+    size_t                        render_chunk_count() const;
     std::vector<bool>       m_dirty_render_chunks;
     std::vector<size_t>     m_dirty_render_chunk_indices;
+    // Leaf triangles per chunk, for the render statistics overlay.
+    std::vector<size_t>     m_chunk_leaf_counts;
     bool                    m_render_wireframe = false;
 
     void on_triangle_painted(int facet_idx) override;
@@ -349,6 +375,8 @@ protected:
     // It stores the value of the previous mesh_id to which the seed fill was applied.
     // It is used to detect when the mouse has moved from one volume to another one.
     int      m_seed_fill_last_mesh_id     = -1;
+    // Orca: per mesh, the seed fill revision that the current stroke has already applied.
+    std::vector<uint64_t> m_applied_seed_fill_revisions;
 
     enum class Button {
         None,
@@ -397,15 +425,15 @@ private:
     mutable RaycastResult m_rr = {Vec2d::Zero(), -1, Vec3f::Zero(), 0};
 
     // BBS
+    // Contours of one volume at one height, cached until the height, mesh or world transformation changes.
     struct CutContours
     {
-        TriangleMesh mesh;
-        GLModel contours;
-        double cut_z{ 0.0 };
-        Vec3d position{ Vec3d::Zero() };
-        Vec3d shift{ Vec3d::Zero() };
-        ObjectID object_id;
-        int instance_idx{ -1 };
+        GLModel             contours;
+        double              cut_z{ 0.0 };
+        ObjectID            volume_id;
+        const TriangleMesh* mesh{ nullptr };
+        Transform3d         trafo{ Transform3d::Identity() };
+        bool                valid{ false };
     };
     mutable std::vector<CutContours> m_cut_contours;
     mutable int                      m_volumes_index = 0;
@@ -415,7 +443,7 @@ private:
     mutable Vec2i32       m_height_start_pos{0, 0};
     mutable bool        m_is_cursor_in_imgui{false};
     BoundingBoxf3 bounding_box() const;
-    void update_contours(int i, const TriangleMesh& vol_mesh, float cursor_z, float max_z, float min_z) const;
+    void update_contours(int i, const ModelVolume& volume, const Transform3d& world_trafo, float cursor_z, float max_z, float min_z) const;
 
 protected:
     void on_set_state() override;

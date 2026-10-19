@@ -393,8 +393,12 @@ class GLCanvas3D
         std::chrono::time_point<std::chrono::high_resolution_clock> m_measuring_start;
         int m_fps_out = -1;
         int m_fps_running = 0;
+        double m_last_frame_cpu_ms = 0.;
     public:
         void increment_fps_counter() { ++m_fps_running; }
+        // CPU time spent in the last call to render(), up to SwapBuffers().
+        void set_last_frame_cpu_ms(double ms) { m_last_frame_cpu_ms = ms; }
+        double get_last_frame_cpu_ms() const { return m_last_frame_cpu_ms; }
         int get_fps() { return m_fps_out; }
         int get_fps_and_reset_if_needed() {
             auto cur_time = std::chrono::high_resolution_clock::now();
