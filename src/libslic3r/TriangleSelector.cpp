@@ -2955,6 +2955,87 @@ private:
 
 const double TriangleCursor::facet_angle_limit = std::cos(Geometry::deg2rad(5.0));
 
+TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting_after_simplification(const indexed_triangle_set&  source_its,
+                                                                                              const TriangleSplittingData& source_painting,
+                                                                                              const indexed_triangle_set&  target_its,
+                                                                                              const std::function<void()>& throw_on_cancel)
+{
+    if (source_painting.bitstream.empty() || source_its.indices.empty() || target_its.indices.empty())
+        return {};
+
+    TriangleMesh     source_mesh(source_its);
+    TriangleSelector source(source_mesh);
+    source.deserialize(source_painting, false);
+
+    // Include unpainted leaves too: otherwise colour would spread into unpainted areas.
+    indexed_triangle_set             leaves;
+    std::vector<EnforcerBlockerType> states;
+    leaves.vertices.reserve(source.m_vertices.size());
+    for (const Vertex& vertex : source.m_vertices)
+        leaves.vertices.push_back(vertex.v);
+    for (const Triangle& triangle : source.m_triangles) {
+        if (triangle.valid() && !triangle.is_split()) {
+            leaves.indices.emplace_back(triangle.verts_idxs[0], triangle.verts_idxs[1], triangle.verts_idxs[2]);
+            states.push_back(triangle.get_state());
+        }
+    }
+    TriangleMesh     target_mesh(target_its);
+    TriangleSelector target(target_mesh);
+    if (std::all_of(states.begin(), states.end(), [&](auto state) { return state == states.front(); })) {
+        for (int facet = 0; facet < target.m_orig_size_indices; ++facet) {
+            if (throw_on_cancel)
+                throw_on_cancel();
+            target.set_facet(facet, states.front());
+        }
+        return target.serialize();
+    }
+
+    const auto tree          = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(leaves.vertices, leaves.indices);
+    const auto nearest_state = [&](const Vec3f& point, float* distance = nullptr) {
+        size_t      hit = 0;
+        Vec3f       closest;
+        const float squared_distance = AABBTreeIndirect::squared_distance_to_indexed_triangle_set(leaves.vertices, leaves.indices, tree,
+                                                                                                  point, hit, closest);
+        if (distance)
+            *distance = std::sqrt(std::max(0.f, squared_distance));
+        return states[hit];
+    };
+
+    target.m_cursor = SinglePointCursor::cursor_factory(Vec3f::Zero(), Vec3f::UnitZ(), 1.f, SPHERE, Transform3d::Identity(),
+                                                        ClippingPlane());
+    target.set_edge_limit(0.6f);
+    const auto refine = [&](int facet) {
+        if (throw_on_cancel)
+            throw_on_cancel();
+        const Triangle& triangle = target.m_triangles[facet];
+        const Vec3f     a        = target.m_vertices[triangle.verts_idxs[0]].v;
+        const Vec3f     b        = target.m_vertices[triangle.verts_idxs[1]].v;
+        const Vec3f     c        = target.m_vertices[triangle.verts_idxs[2]].v;
+        const Vec3f     center   = (a + b + c) / 3.f;
+        float           distance;
+        const auto      state = nearest_state(center, &distance);
+        target.m_triangles[facet].set_state(state);
+        if (target.m_triangles.size() >= 4000000)
+            return false;
+
+        // Search the whole footprint rather than just its corners, so small painted
+        // islands inside a large simplified face still trigger subdivision.
+        const float               radius = distance + std::max({(a - center).norm(), (b - center).norm(), (c - center).norm()});
+        const Eigen::AlignedBox3f bounds(center - Vec3f::Constant(radius), center + Vec3f::Constant(radius));
+        bool                      different_state = false;
+        AABBTreeIndirect::traverse(tree, AABBTreeIndirect::intersecting(bounds), [&](const AABBTreeIndirect::Tree3f::Node& node) {
+            if (states[node.idx] != state)
+                different_state = true;
+            return !different_state;
+        });
+        return different_state;
+    };
+    for (int facet = 0; facet < target.m_orig_size_indices; ++facet)
+        target.refine_triangle_recursive(facet, target.m_neighbors[facet], refine);
+    target.garbage_collect();
+    return target.serialize();
+}
+
 TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
     const indexed_triangle_set&                                               source_its,
     const TriangleSplittingData&                                              source_painting,

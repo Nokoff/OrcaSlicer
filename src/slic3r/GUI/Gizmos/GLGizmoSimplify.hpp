@@ -6,6 +6,7 @@
 #include "GLGizmoBase.hpp"
 #include "slic3r/GUI/3DScene.hpp"
 #include "admesh/stl.h" // indexed_triangle_set
+#include "libslic3r/TriangleSelector.hpp"
 #include <mutex>
 #include <thread>
 
@@ -98,6 +99,7 @@ private:
         Configuration config; // Configuration we started with.
         const ModelVolume* mv = nullptr;
         std::unique_ptr<indexed_triangle_set> result;
+        std::array<TriangleSelector::TriangleSplittingData, 4> painting;
     };
 
     std::thread m_worker;

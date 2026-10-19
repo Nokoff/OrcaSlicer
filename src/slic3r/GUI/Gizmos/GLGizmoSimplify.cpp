@@ -476,56 +476,68 @@ void GLGizmoSimplify::process()
     // Using unique_ptr instead of pass-by-value to avoid an extra
     // copy (which would happen when passing to std::thread).
     auto its = std::make_unique<indexed_triangle_set>(m_volume->mesh().its);
+    std::array<TriangleSelector::TriangleSplittingData, 4> painting = {m_volume->supported_facets.get_data(),
+                                                                       m_volume->seam_facets.get_data(),
+                                                                       m_volume->mmu_segmentation_facets.get_data(),
+                                                                       m_volume->fuzzy_skin_facets.get_data()};
 
-    m_worker = std::thread([this](std::unique_ptr<indexed_triangle_set> its) {
+    m_worker = std::thread(
+        [this, painting = std::move(painting)](std::unique_ptr<indexed_triangle_set> its) mutable {
+            // Checks that the UI thread did not request cancellation, throws if so.
+            std::function<void(void)> throw_on_cancel = [this]() {
+                std::lock_guard lk(m_state_mutex);
+                if (m_state.status == State::cancelling)
+                    throw SimplifyCanceledException();
+            };
 
-        // Checks that the UI thread did not request cancellation, throws if so.
-        std::function<void(void)> throw_on_cancel = [this]() {
+            // Called by worker thread, updates progress bar.
+            // Using CallAfter so the rerequest function is run in UI thread.
+            std::function<void(int)> statusfn = [this](int percent) {
+                std::lock_guard lk(m_state_mutex);
+                m_state.progress = percent;
+                call_after_if_active([this]() { request_rerender(); });
+            };
+
+            // Initialize.
+            uint32_t triangle_count = 0;
+            float    max_error      = std::numeric_limits<float>::max();
+            {
+                std::lock_guard lk(m_state_mutex);
+                if (m_state.config.use_count)
+                    triangle_count = m_state.config.wanted_count;
+                if (!m_state.config.use_count)
+                    max_error = m_state.config.max_error;
+                m_state.progress = 0;
+                m_state.result.reset();
+                m_state.status = State::Status::running;
+            }
+
+            // Start the actual calculation.
+            try {
+                // Keep the source topology until all painting has been transferred.
+                const bool                 has_painting = std::any_of(painting.begin(), painting.end(),
+                                                                      [](const auto& data) { return !data.bitstream.empty(); });
+                const indexed_triangle_set source       = has_painting ? *its : indexed_triangle_set{};
+                its_quadric_edge_collapse(*its, triangle_count, &max_error, throw_on_cancel, statusfn);
+                for (auto& data : painting)
+                    data = TriangleSelector::remap_painting_after_simplification(source, data, *its, throw_on_cancel);
+            } catch (SimplifyCanceledException&) {
+                std::lock_guard lk(m_state_mutex);
+                m_state.status = State::idle;
+            }
+
             std::lock_guard lk(m_state_mutex);
-            if (m_state.status == State::cancelling)
-                throw SimplifyCanceledException();
-        };
+            if (m_state.status == State::Status::running) {
+                // We were not cancelled, the result is valid.
+                m_state.status   = State::Status::idle;
+                m_state.result   = std::move(its);
+                m_state.painting = std::move(painting);
+            }
 
-        // Called by worker thread, updates progress bar.
-        // Using CallAfter so the rerequest function is run in UI thread.
-        std::function<void(int)> statusfn = [this](int percent) {
-            std::lock_guard lk(m_state_mutex);
-            m_state.progress = percent;
-            call_after_if_active([this]() { request_rerender(); });
-        };
-
-        // Initialize.
-        uint32_t triangle_count = 0;
-        float    max_error = std::numeric_limits<float>::max();
-        {
-            std::lock_guard lk(m_state_mutex);
-            if (m_state.config.use_count)
-                triangle_count = m_state.config.wanted_count;
-            if (! m_state.config.use_count)
-                max_error = m_state.config.max_error;
-            m_state.progress = 0;
-            m_state.result.reset();
-            m_state.status = State::Status::running;
-        }
-
-        // Start the actual calculation.
-        try {
-            its_quadric_edge_collapse(*its, triangle_count, &max_error, throw_on_cancel, statusfn);
-        } catch (SimplifyCanceledException &) {
-            std::lock_guard lk(m_state_mutex);
-            m_state.status = State::idle;
-        }
-
-        std::lock_guard lk(m_state_mutex);
-        if (m_state.status == State::Status::running) {
-            // We were not cancelled, the result is valid.
-            m_state.status = State::Status::idle;
-            m_state.result = std::move(its);
-        }
-
-        // Update UI. Use CallAfter so the function is run on UI thread.
-        call_after_if_active([this]() { worker_finished(); });
-    }, std::move(its));
+            // Update UI. Use CallAfter so the function is run on UI thread.
+            call_after_if_active([this]() { worker_finished(); });
+        },
+        std::move(its));
 }
 
 void GLGizmoSimplify::apply_simplify() {
@@ -535,12 +547,15 @@ void GLGizmoSimplify::apply_simplify() {
 
     auto plater = wxGetApp().plater();
     plater->take_snapshot(GUI::format("Simplify %1%", m_volume->name));
-    plater->clear_before_change_mesh(object_idx);
 
     ModelVolume* mv = get_model_volume(selection, wxGetApp().model());
     assert(mv == m_volume);
 
     mv->set_mesh(std::move(*m_state.result));
+    mv->supported_facets.set_data(std::move(m_state.painting[0]));
+    mv->seam_facets.set_data(std::move(m_state.painting[1]));
+    mv->mmu_segmentation_facets.set_data(std::move(m_state.painting[2]));
+    mv->fuzzy_skin_facets.set_data(std::move(m_state.painting[3]));
     m_state.result.reset();
     mv->calculate_convex_hull();
     mv->invalidate_convex_hull_2d();

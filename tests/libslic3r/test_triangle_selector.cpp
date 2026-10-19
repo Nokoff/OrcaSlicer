@@ -9,6 +9,7 @@
 
 #include "libslic3r/CutUtils.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/QuadricEdgeCollapse.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/TriangleSelector.hpp"
 
@@ -745,5 +746,83 @@ TEST_CASE("Smoothing edges straightens a jagged border and removes tabs", "[Tria
             uniform.set_facet(facet, red);
         CHECK(uniform.smooth_boundaries(2.f, Transform3d::Identity()) == 0);
         CHECK(uniform.num_facets(red) == 2 * cells * cells);
+    }
+}
+
+TEST_CASE("Simplification remaps painting onto moved and renumbered faces", "[TriangleSelector][Simplify]")
+{
+    const TriangleMesh source_mesh = make_cube(10., 10., 10.);
+    TriangleSelector   source(source_mesh);
+    const auto         colour = static_cast<EnforcerBlockerType>(33);
+    for (int facet = 0; facet < int(source_mesh.its.indices.size()); ++facet)
+        source.set_facet(facet, colour);
+    indexed_triangle_set simplified = source_mesh.its;
+    its_quadric_edge_collapse(simplified, 6);
+    REQUIRE(simplified.indices.size() < source_mesh.its.indices.size());
+    for (Vec3f& vertex : simplified.vertices)
+        vertex.z() += 0.1f;
+    std::reverse(simplified.indices.begin(), simplified.indices.end());
+    const auto       data = TriangleSelector::remap_painting_after_simplification(source_mesh.its, source.serialize(), simplified);
+    TriangleMesh     target_mesh(simplified);
+    TriangleSelector target(target_mesh);
+    target.deserialize(data);
+    CHECK(target.num_facets(colour) == int(simplified.indices.size()));
+    CHECK(target.num_facets(EnforcerBlockerType::NONE) == 0);
+}
+
+TEST_CASE("Simplification maps distinct states by position rather than face index", "[TriangleSelector][Simplify]")
+{
+    indexed_triangle_set its;
+    its.vertices = {Vec3f(0.f, 0.f, 0.f),  Vec3f(1.f, 0.f, 0.f),  Vec3f(0.f, 1.f, 0.f),
+                    Vec3f(10.f, 0.f, 0.f), Vec3f(11.f, 0.f, 0.f), Vec3f(10.f, 1.f, 0.f)};
+    its.indices  = {Vec3i32(0, 1, 2), Vec3i32(3, 4, 5)};
+    TriangleMesh     source_mesh(its);
+    TriangleSelector source(source_mesh);
+    source.set_facet(0, EnforcerBlockerType::ENFORCER);
+    source.set_facet(1, EnforcerBlockerType::BLOCKER);
+    std::reverse(its.indices.begin(), its.indices.end());
+    for (Vec3f& vertex : its.vertices)
+        vertex.z() += 0.2f;
+    TriangleMesh     target_mesh(its);
+    TriangleSelector target(target_mesh);
+    target.deserialize(TriangleSelector::remap_painting_after_simplification(source_mesh.its, source.serialize(), its));
+    TriangleSelector expected(target_mesh);
+    expected.set_facet(0, EnforcerBlockerType::BLOCKER);
+    expected.set_facet(1, EnforcerBlockerType::ENFORCER);
+    CHECK(target.serialize().triangles_to_split == expected.serialize().triangles_to_split);
+    CHECK(target.serialize().bitstream == expected.serialize().bitstream);
+}
+
+TEST_CASE("Simplification retains split paint and unpainted areas inside a coarse face", "[TriangleSelector][Simplify]")
+{
+    indexed_triangle_set its;
+    its.vertices = {Vec3f(0.f, 0.f, 0.f), Vec3f(10.f, 0.f, 0.f), Vec3f(0.f, 10.f, 0.f)};
+    its.indices  = {Vec3i32(0, 1, 2)};
+    TriangleMesh     source_mesh(its);
+    TriangleSelector source(source_mesh);
+    auto             cursor = TriangleSelector::SinglePointCursor::cursor_factory(Vec3f(2.f, 2.f, 0.f), Vec3f(2.f, 2.f, 10.f), 1.f,
+                                                                                  TriangleSelector::SPHERE, Transform3d::Identity(),
+                                                                                  TriangleSelector::ClippingPlane());
+    source.select_patch(0, std::move(cursor), EnforcerBlockerType::Extruder2, Transform3d::Identity(), true);
+    REQUIRE(source.num_facets(EnforcerBlockerType::Extruder2) > 0);
+    for (Vec3f& vertex : its.vertices)
+        vertex.z() += 0.1f;
+    const auto       data = TriangleSelector::remap_painting_after_simplification(source_mesh.its, source.serialize(), its);
+    TriangleMesh     target_mesh(its);
+    TriangleSelector target(target_mesh);
+    target.deserialize(data);
+    CHECK(target.num_facets(EnforcerBlockerType::Extruder2) > 0);
+    CHECK(target.num_facets(EnforcerBlockerType::NONE) > 0);
+    CHECK(target.select_unsplit_triangle(Vec3f(2.f, 2.f, 0.1f), 0) >= 0);
+
+    SECTION("Empty painting remains empty")
+    {
+        CHECK(TriangleSelector::remap_painting_after_simplification(source_mesh.its, {}, its).bitstream.empty());
+    }
+    SECTION("Remapping can be cancelled")
+    {
+        CHECK_THROWS_AS(TriangleSelector::remap_painting_after_simplification(source_mesh.its, source.serialize(), its,
+                                                                              [] { throw std::runtime_error("cancel"); }),
+                        std::runtime_error);
     }
 }

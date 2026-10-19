@@ -416,6 +416,13 @@ public:
         TriangleSplittingData fuzzy;
     };
 
+    // Transfer paint to a decimated surface, whose vertices may have moved off the
+    // original planes. Subdivide painting (not the target mesh) near colour borders.
+    static TriangleSplittingData remap_painting_after_simplification(const indexed_triangle_set&  source_its,
+                                                                     const TriangleSplittingData& source_painting,
+                                                                     const indexed_triangle_set&  target_its,
+                                                                     const std::function<void()>& throw_on_cancel = {});
+
     // Remap painting data from source mesh to target mesh using spatial mapping.
     // The transforms move both meshes into a common coordinate space. Apply the source
     // transform after deserializing: mirrored winding must not change the saved split tree.
