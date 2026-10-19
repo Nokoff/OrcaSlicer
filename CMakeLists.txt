@@ -111,6 +111,9 @@ option(SLIC3R_WX_STABLE         "Build against wxWidgets stable (3.0) as oppsed 
 option(SLIC3R_PROFILE 			"Compile Snapmaker_Orca with an invasive Shiny profiler" 0)
 option(SLIC3R_PCH               "Use precompiled headers" 1)
 option(SLIC3R_MSVC_COMPILE_PARALLEL "Compile on Visual Studio in parallel" 1)
+set(SLIC3R_MSVC_ARCH "" CACHE STRING "MSVC /arch: instruction set (empty = compiler default)")
+set_property(CACHE SLIC3R_MSVC_ARCH PROPERTY STRINGS "" AVX2 AVX512)
+option(SLIC3R_MSVC_LTO "MSVC whole-program optimization (/GL + /LTCG) for Release" OFF)
 option(SLIC3R_MSVC_PDB          "Generate PDB files on MSVC in Release mode" 1)
 option(SLIC3R_PERL_XS           "Compile XS Perl module and enable Perl unit and integration tests" 0)
 
@@ -220,6 +223,21 @@ if (MSVC)
     # Disable warnings on comparison of unsigned and signed
     # C4018: signed/unsigned mismatch
     add_compile_options(/wd4018)
+    # Opt-in CPU tuning for local builds; both off by default.
+    if (SLIC3R_MSVC_ARCH)
+        if (NOT SLIC3R_MSVC_ARCH MATCHES "^(AVX2|AVX512)$")
+            message(FATAL_ERROR "SLIC3R_MSVC_ARCH must be empty, AVX2 or AVX512 (got '${SLIC3R_MSVC_ARCH}')")
+        endif ()
+        message(STATUS "MSVC: /arch:${SLIC3R_MSVC_ARCH}")
+        add_compile_options(/arch:${SLIC3R_MSVC_ARCH})
+    endif ()
+    if (SLIC3R_MSVC_LTO)
+        # /GL is added per target at the end of this file, see SLIC3R_MSVC_LTO there.
+        message(STATUS "MSVC: LTO enabled (/GL, /LTCG) for Release")
+        foreach (_t EXE SHARED MODULE STATIC)
+            set(CMAKE_${_t}_LINKER_FLAGS_RELEASE "${CMAKE_${_t}_LINKER_FLAGS_RELEASE} /LTCG")
+        endforeach ()
+    endif ()
 endif ()
 
 if (${CMAKE_CXX_COMPILER_ID} STREQUAL "AppleClang" AND ${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER 15)
@@ -1175,3 +1193,25 @@ FunctionEnd
     list(PREPEND CMAKE_MODULE_PATH "${_snapmaker_nsis_tpl_dir}")
 endif ()
 include(CPack)
+
+if (MSVC AND SLIC3R_MSVC_LTO)
+    # Apply /GL to every compiled target except libslic3r_gui, whose LTCG static
+    # library exceeds lib.exe's 4 GB limit. Mixed /GL and plain objects link fine under /LTCG.
+    function(slic3r_collect_targets dir out)
+        get_property(_t DIRECTORY ${dir} PROPERTY BUILDSYSTEM_TARGETS)
+        get_property(_subdirs DIRECTORY ${dir} PROPERTY SUBDIRECTORIES)
+        foreach (_d ${_subdirs})
+            slic3r_collect_targets(${_d} _sub)
+            list(APPEND _t ${_sub})
+        endforeach ()
+        set(${out} ${_t} PARENT_SCOPE)
+    endfunction ()
+    slic3r_collect_targets(${CMAKE_CURRENT_SOURCE_DIR} _lto_targets)
+    foreach (_tgt ${_lto_targets})
+        get_target_property(_type ${_tgt} TYPE)
+        if (_type MATCHES "^(EXECUTABLE|SHARED_LIBRARY|MODULE_LIBRARY|STATIC_LIBRARY|OBJECT_LIBRARY)$"
+            AND NOT _tgt STREQUAL "libslic3r_gui")
+            target_compile_options(${_tgt} PRIVATE $<$<CONFIG:Release>:/GL>)
+        endif ()
+    endforeach ()
+endif ()

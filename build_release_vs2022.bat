@@ -31,19 +31,30 @@ if "%debug%"=="ON" (
         set build_dir=build
     )
 )
+set native=OFF
+set "NATIVE_FLAGS="
+if "%1"=="native" set native=ON
+if "%2"=="native" set native=ON
+if "%native%"=="ON" (
+    @REM CPU-tuned build for the local machine only; deps are shared with the default build
+    set build_dir=build-native
+    set "NATIVE_FLAGS=-DSLIC3R_MSVC_ARCH=AVX512 -DSLIC3R_MSVC_LTO=ON"
+)
 echo build type set to %build_type%
 
 setlocal DISABLEDELAYEDEXPANSION 
+set deps_build_dir=%build_dir%
+if "%native%"=="ON" set deps_build_dir=build
 cd deps
-mkdir %build_dir%
-cd %build_dir%
+mkdir %deps_build_dir%
+cd %deps_build_dir%
 set DEPS=%CD%/OrcaSlicer_dep
 set "SIG_FLAG="
 if defined ORCA_UPDATER_SIG_KEY set "SIG_FLAG=-DORCA_UPDATER_SIG_KEY=%ORCA_UPDATER_SIG_KEY%"
 
-if "%1"=="slicer" (
-    GOTO :slicer
-)
+if "%1"=="slicer" GOTO :slicer
+if "%2"=="slicer" GOTO :slicer
+if "%native%"=="ON" GOTO :slicer
 echo "building deps.."
 
 echo on
@@ -71,7 +82,7 @@ mkdir %build_dir%
 cd %build_dir%
 
 echo on
-cmake .. -G "Visual Studio 17 2022" -A x64 -DBBL_RELEASE_TO_PUBLIC=1 -DORCA_TOOLS=ON %SIG_FLAG% -DCMAKE_PREFIX_PATH="%DEPS%/usr/local" -DOPENSSL_ROOT_DIR="%DEPS%/usr/local" -DCMAKE_INSTALL_PREFIX="./Snapmaker_Orca" -DCMAKE_BUILD_TYPE=%build_type% -DWIN10SDK_PATH="%WindowsSdkDir%Include\%WindowsSDKVersion%\"
+cmake .. -G "Visual Studio 17 2022" -A x64 -DBBL_RELEASE_TO_PUBLIC=1 -DORCA_TOOLS=ON %SIG_FLAG% %NATIVE_FLAGS% -DCMAKE_PREFIX_PATH="%DEPS%/usr/local" -DOPENSSL_ROOT_DIR="%DEPS%/usr/local" -DCMAKE_INSTALL_PREFIX="./Snapmaker_Orca" -DCMAKE_BUILD_TYPE=%build_type% -DWIN10SDK_PATH="%WindowsSdkDir%Include\%WindowsSDKVersion%\"
 cmake --build . --config %build_type% --target ALL_BUILD -- -m
 @echo off
 cd ..
