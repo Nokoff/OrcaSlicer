@@ -71,7 +71,8 @@ bool on_mouse_surface_drag(const wxMouseEvent         &mouse_event,
                            std::optional<SurfaceDrag> &surface_drag,
                            GLCanvas3D                 &canvas,
                            RaycastManager             &raycast_manager,
-                           const std::optional<double>&up_limit = {});
+                           const std::optional<double>&up_limit = {},
+                           const RaycastManager::AllowVolumes* allowed_volumes = nullptr);
 
 /// <summary>
 /// Calculate translation of volume onto surface of model

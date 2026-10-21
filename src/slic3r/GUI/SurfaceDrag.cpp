@@ -33,7 +33,8 @@ bool start_dragging(const Vec2d                 &mouse_pos,
                     std::optional<SurfaceDrag>  &surface_drag,
                     GLCanvas3D                  &canvas,
                     RaycastManager              &raycast_manager,
-                    const std::optional<double> &up_limit);
+                    const std::optional<double> &up_limit,
+                    const RaycastManager::AllowVolumes* allowed_volumes);
 
 bool dragging(const Vec2d                 &mouse_pos,
               const Camera                &camera,
@@ -85,7 +86,8 @@ bool on_mouse_surface_drag(const wxMouseEvent         &mouse_event,
                            std::optional<SurfaceDrag> &surface_drag,
                            GLCanvas3D                 &canvas,
                            RaycastManager             &raycast_manager,
-                           const std::optional<double>&up_limit)
+                           const std::optional<double>&up_limit,
+                           const RaycastManager::AllowVolumes* allowed_volumes)
 {
     // Fix when leave window during dragging
     // Fix when click right button
@@ -108,7 +110,7 @@ bool on_mouse_surface_drag(const wxMouseEvent         &mouse_event,
         return false;
 
     if (mouse_event.LeftDown())
-        return start_dragging(mouse_position(mouse_event), camera, surface_drag, canvas, raycast_manager, up_limit);
+        return start_dragging(mouse_position(mouse_event), camera, surface_drag, canvas, raycast_manager, up_limit, allowed_volumes);
 
     // Dragging starts out of window
     if (!surface_drag.has_value())
@@ -493,7 +495,8 @@ bool start_dragging(const Vec2d                &mouse_pos,
                     std::optional<SurfaceDrag> &surface_drag,
                     GLCanvas3D                 &canvas,
                     RaycastManager             &raycast_manager,
-                    const std::optional<double>&up_limit)
+                    const std::optional<double>&up_limit,
+                    const RaycastManager::AllowVolumes* allowed_volumes)
 {
     // selected volume
     GLVolume *gl_volume_ptr = get_selected_gl_volume(canvas);
@@ -525,7 +528,7 @@ bool start_dragging(const Vec2d                &mouse_pos,
     if (volume->is_the_only_one_part())
         return false;
 
-    RaycastManager::AllowVolumes condition = create_condition(object->volumes, volume->id());
+    RaycastManager::AllowVolumes condition = allowed_volumes ? *allowed_volumes : create_condition(object->volumes, volume->id());
     RaycastManager::Meshes meshes = create_meshes(canvas, condition);
     // initialize raycasters
     // INFO: It could slows down for big objects
@@ -572,7 +575,7 @@ bool start_dragging(const Vec2d                &mouse_pos,
     }
 
     std::optional<float> start_distance;
-    if (!volume->emboss_shape->projection.use_surface)
+    if (volume->emboss_shape && !volume->emboss_shape->projection.use_surface)
         start_distance = calc_distance(gl_volume, raycast_manager, &condition, volume->emboss_shape->fix_3mf_tr);
     surface_drag = SurfaceDrag{mouse_offset,   world_tr,  instance_tr_inv,
                                gl_volume_ptr,  condition, start_angle,

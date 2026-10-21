@@ -197,6 +197,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Gizmos/GLGizmoSimplify.hpp
     GUI/Gizmos/GLGizmoSmooth.cpp
     GUI/Gizmos/GLGizmoSmooth.hpp
+    GUI/Gizmos/GLGizmoSurfaceWrap.cpp
+    GUI/Gizmos/GLGizmoSurfaceWrap.hpp
     #GUI/Gizmos/GLGizmoSlaSupports.cpp
     #GUI/Gizmos/GLGizmoSlaSupports.hpp
     GUI/Gizmos/GLGizmosManager.cpp

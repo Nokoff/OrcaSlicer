@@ -18,6 +18,7 @@ add_executable(${_TEST_NAME}_tests
 	test_triangle_selector.cpp
     test_painting_updates.cpp
 	test_mesh_smoothing.cpp
+	test_surface_wrap.cpp
 	test_local_z_order_optimizer.cpp
 	test_placeholder_parser.cpp
 	test_polygon.cpp

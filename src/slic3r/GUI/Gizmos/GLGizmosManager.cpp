@@ -25,6 +25,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmoMmuSegmentation.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoSimplify.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoSmooth.hpp"
+#include "slic3r/GUI/Gizmos/GLGizmoSurfaceWrap.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoEmboss.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoSVG.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoMeshBoolean.hpp"
@@ -222,6 +223,7 @@ bool GLGizmosManager::init()
     m_gizmos.emplace_back(new GLGizmoSimplify(m_parent, "reduce_triangles.svg", EType::Simplify));
     m_gizmos.emplace_back(new GLGizmoBrimEars(m_parent, m_is_dark ? "toolbar_brimears_dark.svg" : "toolbar_brimears.svg", EType::BrimEars));
     m_gizmos.emplace_back(new GLGizmoSmooth(m_parent, "toolbar_smooth.svg", EType::Smooth));
+    m_gizmos.emplace_back(new GLGizmoSurfaceWrap(m_parent, "toolbar_surface_wrap.svg", EType::SurfaceWrap));
     //m_gizmos.emplace_back(new GLGizmoSlaSupports(m_parent, "sla_supports.svg", sprite_id++));
     //m_gizmos.emplace_back(new GLGizmoFaceDetector(m_parent, "face recognition.svg", sprite_id++));
     //m_gizmos.emplace_back(new GLGizmoHollow(m_parent, "hollow.svg", sprite_id++));
@@ -1459,6 +1461,8 @@ std::string get_name_from_gizmo_etype(GLGizmosManager::EType type)
         return "Seam";
     case GLGizmosManager::EType::Smooth:
         return "Smooth";
+    case GLGizmosManager::EType::SurfaceWrap:
+        return "SurfaceWrap";
     case GLGizmosManager::EType::Emboss:
         return "Text";
     case GLGizmosManager::EType::MmSegmentation:

@@ -459,6 +459,8 @@ set(lisbslic3r_sources
     TriangleMesh.cpp
     MeshSmoothing.cpp
     MeshSmoothing.hpp
+    SurfaceWrap.cpp
+    SurfaceWrap.hpp
     TriangleMesh.hpp
     TriangleMeshSlicer.cpp
     TriangleMeshSlicer.hpp

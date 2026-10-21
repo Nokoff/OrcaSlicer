@@ -91,6 +91,7 @@ public:
         Simplify,
         BrimEars,
         Smooth,
+        SurfaceWrap,
         //SlaSupports,
         // BBS
         //FaceRecognition,
