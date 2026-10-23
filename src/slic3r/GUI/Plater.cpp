@@ -4228,18 +4228,24 @@ void Sidebar::jump_to_option(size_t selected)
 }
 
 // BBS. Move logic from Plater::on_extruders_change() to Sidebar::on_filaments_change().
-void Sidebar::on_filaments_change(size_t num_filaments)
+void Sidebar::on_filaments_change(size_t num_filaments, bool sync_mixed_filaments)
 {
     auto& choices = combos_filament();
+
+    // Merging shifts the surviving slots. Undo must refresh their preset and
+    // colour as well as recreating the controls for the removed slots.
+    for (auto* choice : choices)
+        choice->update();
 
     if (num_filaments == choices.size()) {
         // Project load may keep the same physical filament count while mixed
         // definitions changed. Refresh mixed panel even without count changes.
-        const bool sync_manager = !p->m_skip_mixed_filament_sync_once;
+        const bool sync_manager = sync_mixed_filaments && !p->m_skip_mixed_filament_sync_once;
         p->m_skip_mixed_filament_sync_once = false;
         update_ui_from_settings();
         update_dynamic_filament_list();
         update_mixed_filament_panel(sync_manager);
+        update_color_mix_panel();
 
         // Recalc scrolled filament window height (max 3 rows, matches color mix)
         if (p->m_scrolled_filaments && p->m_panel_scrolled_filament_content) {
@@ -4327,7 +4333,7 @@ void Sidebar::on_filaments_change(size_t num_filaments)
     p->m_panel_filament_title->Refresh();
     update_ui_from_settings();
     update_dynamic_filament_list();
-    update_mixed_filament_panel();
+    update_mixed_filament_panel(sync_mixed_filaments);
     update_color_mix_panel();
 
     // Disable add buttons when combined filament limit reached
@@ -17617,6 +17623,7 @@ void Plater::priv::restore_filament_state(const UndoRedo::FilamentState& state,
     apply_changed_config(preset_bundle->project_config, state.project_config, project_config_keys);
     if (config != nullptr)
         apply_changed_config(*config, state.full_config, full_config_keys);
+    q->update_filament_colors_in_full_config();
 }
 
 void Plater::priv::refresh_filaments_after_undo_redo()
@@ -17627,10 +17634,17 @@ void Plater::priv::refresh_filaments_after_undo_redo()
 
     const size_t count = preset_bundle->filament_presets.size();
     q->update_filament_colors_in_full_config();
-    sidebar->on_filaments_change(count);
+    // The snapshot already contains the exact mixed-filament manager state.
+    // Regeneration here would discard restored entries and their stable IDs.
+    sidebar->on_filaments_change(count, false);
     sidebar->obj_list()->update_objects_list_filament_column(count);
     wxGetApp().get_tab(Preset::TYPE_PRINT)->update();
     preset_bundle->export_selections(*wxGetApp().app_config);
+    for (GLCanvas3D* canvas : {view3D->get_canvas3d(), assemble_view->get_canvas3d()}) {
+        canvas->update_volumes_colors_by_extruder();
+        canvas->set_as_dirty();
+        canvas->request_extra_frame();
+    }
 }
 
 void Plater::priv::begin_filament_snapshot(const std::string& snapshot_name)
