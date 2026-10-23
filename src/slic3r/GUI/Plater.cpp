@@ -8458,6 +8458,10 @@ void Sidebar::change_filament(size_t from_id, size_t to_id)
     auto& pb = *wxGetApp().preset_bundle;
     const size_t num_physical = pb.filament_presets.size();
 
+    const size_t total_filaments = pb.mixed_filaments.total_filaments(num_physical);
+    if (from_id >= total_filaments || to_id >= total_filaments)
+        return;
+
     // 2. Determine source and target types
     // Note: filament IDs here are 0-based, but is_mixed expects 1-based
     bool from_is_mixed = pb.mixed_filaments.is_mixed((unsigned int)(from_id + 1), num_physical);
@@ -8513,6 +8517,10 @@ void Sidebar::change_filament(size_t from_id, size_t to_id)
                 return;
         }
     }
+
+    // Capture both the model assignments and filament configuration as one undo action.
+    // Wait until all confirmation dialogs have been accepted before recording it.
+    Plater::TakeFilamentSnapshot snapshot(wxGetApp().plater(), "Merge filaments");
 
     // 4. Execute merge based on scenario
     if (from_is_mixed) {
