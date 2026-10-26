@@ -10705,6 +10705,9 @@ struct Plater::priv
         return false;
 #endif
     }
+    bool is_slicing_in_progress() const {
+        return m_is_slicing || background_process.running();
+    }
     void update_print_volume_state();
     void schedule_background_process();
     // Update background processing thread from the current config and Model.
@@ -11004,7 +11007,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         "support_top_z_distance", "support_bottom_z_distance", "raft_layers",
         "wipe_tower_rotation_angle", "wipe_tower_cone_angle", "wipe_tower_extra_spacing", "wipe_tower_extra_flow", "local_z_wipe_tower_purge_lines", "wipe_tower_max_purge_speed",
         "wipe_tower_wall_type", "wipe_tower_extra_rib_length","wipe_tower_rib_width","wipe_tower_fillet_wall",
-        "wipe_tower_filament",
+        "wipe_tower_filament", "wipe_tower_wall_gap", "prime_tower_enable_framework",
         "best_object_pos"
         }))
     , sidebar(new Sidebar(q))
@@ -17341,7 +17344,7 @@ bool Plater::priv::can_add_plate() const
 
 bool Plater::priv::can_delete_plate() const
 {
-    return q->get_partplate_list().get_plate_count() > 1;
+    return q->get_partplate_list().get_plate_count() > 1 && !is_slicing_in_progress();
 }
 
 bool Plater::priv::can_fix_through_netfabb() const
@@ -17951,7 +17954,6 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
                     tower_x_opt->set_at(&tower_x_new, plate_idx, 0);
                     tower_y_opt->set_at(&tower_y_new, plate_idx, 0);
                     need_update = true;
-                    break;
                 }
             }
 
@@ -22939,6 +22941,9 @@ void Plater::on_filaments_change(size_t num_filaments)
         PartPlate* part_plate = plate_list.get_plate(i);
         part_plate->update_first_layer_print_sequence(num_filaments);
     }
+
+    // Adding/removing filament is a parameter change too: reset dismissal.
+    get_notification_manager()->reset_pla_petg_mix_warning();
 }
 
 void Plater::on_bed_type_change(BedType bed_type)
@@ -23795,6 +23800,10 @@ void Plater::on_config_change(const DynamicPrintConfig &config)
     }
 
     notify_filament_usage_changed();
+
+    // Any config change resets the user's dismissal of PLA/PETG mix warning
+    // so the per-frame detection re-evaluates and re-shows if still applicable.
+    get_notification_manager()->reset_pla_petg_mix_warning();
 }
 
 void Plater::set_bed_shape() const
@@ -24940,6 +24949,9 @@ int Plater::duplicate_plate(int plate_index)
 int Plater::delete_plate(int plate_index)
 {
     int index = plate_index, ret;
+
+    if (p->is_slicing_in_progress())
+        return -1;
 
     if (plate_index == -1)
         index = p->partplate_list.get_curr_plate_index();

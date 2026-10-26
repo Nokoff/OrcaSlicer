@@ -15,6 +15,7 @@
 #include "libslic3r/LocalesUtils.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/GCode/WipeTowerHelper.hpp"
 #if ENABLE_ENHANCED_PRINT_VOLUME_FIT
 #include "libslic3r/BuildVolume.hpp"
 #endif // ENABLE_ENHANCED_PRINT_VOLUME_FIT
@@ -1239,21 +1240,24 @@ void Selection::translate(const Vec3d &displacement, TransformationType transfor
             if (v.is_wipe_tower) {//in world cs
                 int           plate_idx           = v.object_idx() - 1000;
                 BoundingBoxf3 plate_bbox          = wxGetApp().plater()->get_partplate_list().get_plate(plate_idx)->get_bounding_box();
+                BoundingBox plate_bbox2d = BoundingBox(scaled(Vec2f(plate_bbox.min[0], plate_bbox.min[1])), scaled(Vec2f(plate_bbox.max[0], plate_bbox.max[1])));
                 Vec3d         tower_size          = v.bounding_box().size();
                 Vec3d         tower_origin        = m_cache.volumes_data[i].get_volume_position();
                 Vec3d         actual_displacement = displacement;
-                // The rendered tower is the bare box: the brim and the ribs that run diagonally out
-                // past its corners both print outside it, so dragging has to keep room for them too.
+                const Print *plate_print = wxGetApp().plater()->get_partplate_list().get_plate(plate_idx)->fff_print();
+                const bool show_read_wipe_tower = plate_print != nullptr && plate_print->is_step_done(psWipeTower);
                 const DynamicPrintConfig &print_cfg = wxGetApp().preset_bundle->prints.get_edited_preset().config;
-                const ConfigOptionFloat  *brim_opt  = print_cfg.option<ConfigOptionFloat>("prime_tower_brim_width");
-                const double  margin              = WIPE_TOWER_MARGIN + (brim_opt ? brim_opt->value : 0.) +
-                                                    wipe_tower_wall_reach(print_cfg, (float) tower_size(0), (float) tower_size(1));
+                const ConfigOptionFloat *brim_opt = print_cfg.option<ConfigOptionFloat>("prime_tower_brim_width");
+                const double brim_width = brim_opt != nullptr ? brim_opt->value : 0.;
+                // A sliced volume already includes its rib wall. Otherwise reserve the configured
+                // brim and the small safety margin needed by the unsliced tower preview.
+                const double margin = show_read_wipe_tower ? WIPE_TOWER_MARGIN : brim_width + 0.5;
 
                 actual_displacement = (m_cache.volumes_data[i].get_instance_rotation_matrix() * m_cache.volumes_data[i].get_instance_scale_matrix() *
                                         m_cache.volumes_data[i].get_instance_mirror_matrix())
                                             .inverse() *
                                         displacement;
-                if (tower_origin(0) + actual_displacement(0) - margin < plate_bbox.min(0)) {
+                /*if (tower_origin(0) + actual_displacement(0) - margin < plate_bbox.min(0)) {
                     actual_displacement(0) = plate_bbox.min(0) - tower_origin(0) + margin;
                 } else if (tower_origin(0) + actual_displacement(0) + tower_size(0) + margin > plate_bbox.max(0)) {
                     actual_displacement(0) = plate_bbox.max(0) - tower_origin(0) - tower_size(0) - margin;
@@ -1263,8 +1267,12 @@ void Selection::translate(const Vec3d &displacement, TransformationType transfor
                     actual_displacement(1) = plate_bbox.min(1) - tower_origin(1) + margin;
                 } else if (tower_origin(1) + actual_displacement(1) + tower_size(1) + margin > plate_bbox.max(1)) {
                     actual_displacement(1) = plate_bbox.max(1) - tower_origin(1) - tower_size(1) - margin;
-                }
-
+                }*/
+                BoundingBoxf3 tower_bbox = v.bounding_box();
+                tower_bbox.translate(actual_displacement + tower_origin);
+                BoundingBox tower_bbox2d = BoundingBox(scaled(Vec2f(tower_bbox.min[0], tower_bbox.min[1])), scaled(Vec2f(tower_bbox.max[0], tower_bbox.max[1])));
+                Vec2f offset = WipeTowerHelper::move_box_inside_box(tower_bbox2d, plate_bbox2d, scaled(margin));
+                actual_displacement += Vec3d(offset[0], offset[1], 0);
                 v.set_volume_offset(m_cache.volumes_data[i].get_volume_position() + actual_displacement);
             }
             else if (transformation_type.local() && transformation_type.absolute()) {
