@@ -147,6 +147,10 @@ protected:
 
     // Orca: despeckle. Painted regions of up to this area (mm^2) are merged into the color around them.
     float             m_speck_max_area = 1.f;
+    // Lines and dashes narrower than this (mm) are merged as well, whatever their area. 0 turns it off.
+    float             m_speck_max_width = 1.5f;
+    // Only the lines of the selected filament are merged: a stray line can be as wide as a wanted trim of another color.
+    bool              m_speck_lines_selected_only = true;
     // How far around a speck (mm, along the surface) the surrounding colors are sampled.
     float             m_speck_blend_radius = 3.f;
     // Orca: smooth edges. How far around a border (mm, along the surface) the colors are blended.
@@ -158,6 +162,7 @@ protected:
     static const constexpr float      CursorRadiusMin = 0.1f; // cannot be zero
     static const constexpr float      SpeckAreaMin    = 0.01f;
     static const constexpr float      SpeckAreaMax    = 100.f;
+    static const constexpr float      SpeckWidthMax   = 5.f;
     static const constexpr float      SpeckRadiusMin  = 0.2f;
     static const constexpr float      SpeckRadiusMax  = 30.f;
     static const constexpr float      SmoothRadiusMin = 0.2f;

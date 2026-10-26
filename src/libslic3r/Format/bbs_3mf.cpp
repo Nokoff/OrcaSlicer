@@ -6866,6 +6866,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                         mz_zip_writer_add_from_zip_reader(main, &archive, 0);
                     }
                     mz_zip_reader_end(&archive);
+                    // Finalizing a heap archive transfers buffer ownership to
+                    // the caller; the memory reader does not release it.
+                    mz_free(ppBuf);
                 }
             });
         }
@@ -8117,6 +8120,7 @@ bool _BBS_3MF_Exporter::_add_gcode_file_to_archive(mz_zip_archive& archive, cons
                 mz_zip_writer_add_from_zip_reader(&root_archive, &archive, 0);
             }
             mz_zip_reader_end(&archive);
+            mz_free(ppBuf);
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ":" <<__LINE__ << boost::format(", store  %1% to 3mf %2%\n") % src_gcode_file % gcode_in_3mf;
         }
     });

@@ -66,3 +66,17 @@ target_link_libraries(filament_merge_tests PRIVATE ${TEST_LINK_LIBS} ${wxWidgets
 set_property(TARGET filament_merge_tests PROPERTY FOLDER "tests")
 catch_discover_tests(filament_merge_tests TEST_PREFIX "filament_merge: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})
 # add_test(${_TEST_NAME}_tests ${_TEST_NAME}_tests "${CATCH_EXTRA_ARGS} exclude:[NotWorking]")
+
+# Test the transport without linking or starting the GUI. The broker uses loopback only.
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if (Python3_Interpreter_FOUND)
+    add_executable(mqtt_recovery_probe MQTTRecovery_probe.cpp ../../src/slic3r/Utils/MQTT.cpp)
+    target_include_directories(mqtt_recovery_probe PRIVATE ../../src)
+    target_link_libraries(mqtt_recovery_probe PRIVATE paho-mqttpp3-static Boost::log Boost::filesystem Boost::thread)
+    set_property(TARGET mqtt_recovery_probe PROPERTY FOLDER "tests")
+    add_test(NAME mqtt_recovery
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mqtt_recovery_broker.py $<TARGET_FILE:mqtt_recovery_probe>)
+    add_test(NAME mqtt_recovery_cancel
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mqtt_recovery_broker.py $<TARGET_FILE:mqtt_recovery_probe> cancel)
+    set_tests_properties(mqtt_recovery mqtt_recovery_cancel PROPERTIES TIMEOUT 75 LABELS "network")
+endif()

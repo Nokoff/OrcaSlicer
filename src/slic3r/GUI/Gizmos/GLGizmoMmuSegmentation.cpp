@@ -284,11 +284,17 @@ bool GLGizmoMmuSegmentation::on_init()
     // Despeckle descriptions
     m_desc["speck_remove"]         = _L("Remove specks");
     m_desc["speck_size"]           = _L("Speck size");
+    m_desc["speck_line_width"]     = _L("Line width");
+    m_desc["speck_lines_selected_only"]         = _L("Only lines of the selected color");
+    m_desc["speck_lines_selected_only_tooltip"] = _L("Remove only the thin lines painted with the selected filament. A stray "
+                                                     "line can be as wide as a trim of another color that should stay, so "
+                                                     "pick the color of the lines to get rid of.");
     m_desc["speck_blend_radius"]   = _L("Blend radius");
     m_desc["speck_tooltip"]        = _L("Merge small stray patches of color into the color mostly around them, on the whole object. "
                                         "Every patch of one color up to the given area is repainted with the color that dominates the "
                                         "surface around it, in every direction, within the blend radius. Nearer and larger areas "
-                                        "count for more. Separate painted parts without any neighbor are kept.");
+                                        "count for more. Every line, dash or thin strip narrower than the line width (0 to keep them) "
+                                        "is filled by the colors along its sides. Separate painted parts without any neighbor are kept.");
 
     // Smooth edges descriptions
     m_desc["smooth_edges"]         = _L("Smooth edges");
@@ -792,6 +798,19 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
     ImGui::PushItemWidth(1.5f * slider_icon_width);
     ImGui::BBLDragFloat("##speck_max_area_input", &m_speck_max_area, 0.05f, 0.0f, 0.0f, "%.2f");
     m_speck_max_area = std::clamp(m_speck_max_area, SpeckAreaMin, SpeckAreaMax);
+
+    ImGui::AlignTextToFramePadding();
+    m_imgui->text(m_desc.at("speck_line_width"));
+    ImGui::SameLine(sliders_left_width);
+    ImGui::PushItemWidth(sliders_width);
+    m_imgui->bbl_slider_float_style("##speck_max_width", &m_speck_max_width, 0.f, SpeckWidthMax, "%.2f mm", 1.f, true);
+    ImGui::SameLine(drag_left_width + sliders_left_width);
+    ImGui::PushItemWidth(1.5f * slider_icon_width);
+    ImGui::BBLDragFloat("##speck_max_width_input", &m_speck_max_width, 0.05f, 0.0f, 0.0f, "%.2f");
+    m_speck_max_width = std::clamp(m_speck_max_width, 0.f, SpeckWidthMax);
+    m_imgui->bbl_checkbox(m_desc["speck_lines_selected_only"], m_speck_lines_selected_only);
+    if (ImGui::IsItemHovered())
+        m_imgui->tooltip(m_desc.at("speck_lines_selected_only_tooltip"), max_tooltip_width);
 
     ImGui::AlignTextToFramePadding();
     m_imgui->text(m_desc.at("speck_blend_radius"));
@@ -1392,7 +1411,8 @@ void GLGizmoMmuSegmentation::remove_specks()
         if (selector_idx >= m_triangle_selectors.size())
             break;
         TriangleSelectorGUI& selector = *m_triangle_selectors[selector_idx++];
-        const int            volume_repainted = selector.remove_small_regions(m_speck_max_area, m_speck_blend_radius, instance_trafo * volume->get_matrix_no_offset());
+        const int            volume_repainted = selector.remove_small_regions(m_speck_max_area, m_speck_max_width, m_speck_blend_radius, instance_trafo * volume->get_matrix_no_offset(),
+                                                                                   m_speck_lines_selected_only ? int(get_left_button_state_type()) : -1);
         if (volume_repainted > 0)
             selector.request_update_render_data(true);
         repainted += volume_repainted;
@@ -1407,7 +1427,7 @@ void GLGizmoMmuSegmentation::remove_specks()
     update_model_object();
     m_parent.set_as_dirty();
     wxGetApp().plater()->get_notification_manager()->push_notification(
-        GUI::format(_u8L("Merged %1% speck(s) into the surrounding color."), repainted));
+        GUI::format(_u8L("Merged %1% speck(s) and thin line(s) into the surrounding color."), repainted));
 }
 
 void GLGizmoMmuSegmentation::update_model_object()

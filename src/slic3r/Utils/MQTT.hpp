@@ -8,6 +8,7 @@
 #include <boost/log/trivial.hpp>
 #include <memory>
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <utility>
 #include <boost/filesystem.hpp>
@@ -151,10 +152,10 @@ private:
     action_listener subListener_;    // Subscription listener
     int connect_retry_time_;         // Connection retry counter
     int subscribe_retry_time_;       // Subscription retry counter
-    std::function<void()> connection_failure_callback_; 
+    std::function<void()> connection_failure_callback_;
 
-    std::atomic<bool> is_reconnecting;
-    std::atomic<int> pending_reconnect_checks;
+    std::atomic<bool> is_reconnecting{false};
+    std::atomic<int> pending_reconnect_checks{0};
     std::atomic<bool> ever_connected_;
     // Set as the very first step of ~MqttClient. Paho callbacks (esp.
     // connection_lost) check it before touching any other member.
@@ -163,6 +164,7 @@ private:
     // this instead of calling shared_from_this() (which throws bad_weak_ptr
     // once the last owner has started destruction).
     std::weak_ptr<MqttClient> self_;
+    std::atomic<std::uint64_t> reconnect_generation_;
 
     // tmp path
     boost::filesystem::path temp_ca_path_;

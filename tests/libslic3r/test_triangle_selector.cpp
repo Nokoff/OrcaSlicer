@@ -553,7 +553,7 @@ TEST_CASE("Removing small regions repaints a speck with the color around it", "[
         selector.set_facet(11, white);
         REQUIRE(selector.num_facets(white) == 2);
 
-        CHECK(selector.remove_small_regions(2.5f, 3.f, Transform3d::Identity()) == 1);
+        CHECK(selector.remove_small_regions(2.5f, 0.f, 3.f, Transform3d::Identity()) == 1);
         CHECK(selector.num_facets(white) == 0);
         CHECK(selector.num_facets(green) == 32);
     }
@@ -566,7 +566,7 @@ TEST_CASE("Removing small regions repaints a speck with the color around it", "[
         selector.select_patch(10, std::move(cursor), white, Transform3d::Identity(), true, 0.f);
         REQUIRE(selector.num_facets(white) > 0);
 
-        CHECK(selector.remove_small_regions(0.5f, 3.f, Transform3d::Identity()) >= 1);
+        CHECK(selector.remove_small_regions(0.5f, 0.f, 3.f, Transform3d::Identity()) >= 1);
         CHECK(selector.num_facets(white) == 0);
         // The split facets merge back into the original ones.
         CHECK(selector.num_facets(green) == 32);
@@ -576,7 +576,7 @@ TEST_CASE("Removing small regions repaints a speck with the color around it", "[
     {
         selector.set_facet(10, white);
         selector.set_facet(11, white);
-        CHECK(selector.remove_small_regions(0.8f, 3.f, Transform3d::Identity()) == 0);
+        CHECK(selector.remove_small_regions(0.8f, 0.f, 3.f, Transform3d::Identity()) == 0);
         CHECK(selector.num_facets(white) == 2);
     }
 
@@ -585,7 +585,7 @@ TEST_CASE("Removing small regions repaints a speck with the color around it", "[
         selector.set_facet(10, white);
         selector.set_facet(11, white);
         // The speck covers 1, or 4 once scaled by 2, which is above the limit of 2.5.
-        CHECK(selector.remove_small_regions(2.5f, 3.f, Eigen::Scaling(2., 2., 2.) * Transform3d::Identity()) == 0);
+        CHECK(selector.remove_small_regions(2.5f, 0.f, 3.f, Eigen::Scaling(2., 2., 2.) * Transform3d::Identity()) == 0);
         CHECK(selector.num_facets(white) == 2);
     }
 
@@ -598,7 +598,7 @@ TEST_CASE("Removing small regions repaints a speck with the color around it", "[
         selector.set_facet(10, white);
         selector.set_facet(11, green);
 
-        selector.remove_small_regions(1.f, 3.f, Transform3d::Identity());
+        selector.remove_small_regions(1.f, 0.f, 3.f, Transform3d::Identity());
         CHECK(selector.num_facets(white) == 0);
         CHECK(selector.num_facets(red) == 32);
     }
@@ -621,14 +621,14 @@ TEST_CASE("Removing small regions looks only as far as the blend radius", "[Tria
 
     SECTION("a short radius sees only the neighbors")
     {
-        CHECK(selector.remove_small_regions(0.6f, 0.3f, Transform3d::Identity()) == 1);
+        CHECK(selector.remove_small_regions(0.6f, 0.f, 0.3f, Transform3d::Identity()) == 1);
         CHECK(selector.num_facets(white) == 0);
         CHECK(selector.num_facets(green) == 5);
     }
 
     SECTION("a long radius sees the whole surface around it")
     {
-        CHECK(selector.remove_small_regions(0.6f, 6.f, Transform3d::Identity()) == 1);
+        CHECK(selector.remove_small_regions(0.6f, 0.f, 6.f, Transform3d::Identity()) == 1);
         CHECK(selector.num_facets(white) == 0);
         CHECK(selector.num_facets(green) == 4);
     }
@@ -646,7 +646,7 @@ TEST_CASE("Removing small regions keeps a painted region that has no neighbor", 
     constexpr auto     white = static_cast<EnforcerBlockerType>(3);
     selector.set_facet(1, white);
 
-    CHECK(selector.remove_small_regions(100.f, 3.f, Transform3d::Identity()) == 0);
+    CHECK(selector.remove_small_regions(100.f, 0.f, 3.f, Transform3d::Identity()) == 0);
     CHECK(selector.num_facets(white) == 1);
 }
 
@@ -749,6 +749,104 @@ TEST_CASE("Smoothing edges straightens a jagged border and removes tabs", "[Tria
     }
 }
 
+TEST_CASE("Removing small regions repaints thin lines and dashes", "[TriangleSelector][MMUPaint][Despeckle]")
+{
+    constexpr int      cells = 20;
+    const TriangleMesh mesh(flat_grid_of(cells));
+    TriangleSelector   selector(mesh);
+    constexpr auto     green = static_cast<EnforcerBlockerType>(2);
+    constexpr auto     white = static_cast<EnforcerBlockerType>(3);
+    for (int facet = 0; facet < 2 * cells * cells; ++facet)
+        selector.set_facet(facet, green);
+    const auto paint_cell = [&](int i, int j) {
+        selector.set_facet(2 * (j * cells + i), white);
+        selector.set_facet(2 * (j * cells + i) + 1, white);
+    };
+
+    SECTION("a line one cell wide across the whole grid")
+    {
+        for (int i = 0; i < cells; ++i)
+            paint_cell(i, 10);
+        // The line covers 20, far above the speck size.
+        CHECK(selector.remove_small_regions(1.f, 2.f, 3.f, Transform3d::Identity()) >= 1);
+        CHECK(selector.num_facets(white) == 0);
+    }
+
+    SECTION("a line is kept with a zero line width")
+    {
+        for (int i = 0; i < cells; ++i)
+            paint_cell(i, 10);
+        CHECK(selector.remove_small_regions(1.f, 0.f, 3.f, Transform3d::Identity()) == 0);
+        CHECK(selector.num_facets(white) == 2 * cells);
+    }
+
+    SECTION("a broken dotted line")
+    {
+        // Dashes of three cells with gaps of two, each one above the speck size.
+        for (int i = 0; i < cells; ++i)
+            if (i % 5 < 3)
+                paint_cell(i, 10);
+        CHECK(selector.remove_small_regions(1.f, 2.f, 3.f, Transform3d::Identity()) == 4);
+        CHECK(selector.num_facets(white) == 0);
+    }
+
+    SECTION("a band wider than the line width stays whole")
+    {
+        for (int j = 6; j < 14; ++j)
+            for (int i = 0; i < cells; ++i)
+                paint_cell(i, j);
+        CHECK(selector.remove_small_regions(1.f, 2.f, 3.f, Transform3d::Identity()) == 0);
+        CHECK(selector.num_facets(white) == 2 * 8 * cells);
+    }
+
+    SECTION("a thin tail sticking out of a wide area")
+    {
+        for (int j = 0; j < cells; ++j)
+            for (int i = 0; i < 8; ++i)
+                paint_cell(i, j);
+        for (int i = 8; i < cells; ++i)
+            paint_cell(i, 10);
+        CHECK(selector.remove_small_regions(1.f, 2.f, 3.f, Transform3d::Identity()) >= 1);
+
+        // The tail is gone apart from a stub at its root, and the wide area is all there.
+        const StateStats tail = state_stats(selector, white, 10.f, 11.f);
+        INFO("white in the tail row up to x = " << tail.max_x);
+        CHECK(tail.max_x < 11.f);
+        CHECK(state_stats(selector, white, 0.f, 9.f).max_x > 7.f);
+        CHECK(state_stats(selector, white).area >= 8.f * cells);
+    }
+
+    SECTION("only the lines of the given state")
+    {
+        constexpr auto red = static_cast<EnforcerBlockerType>(4);
+        for (int i = 0; i < cells; ++i) {
+            paint_cell(i, 10);
+            selector.set_facet(2 * (5 * cells + i), red);
+            selector.set_facet(2 * (5 * cells + i) + 1, red);
+        }
+        CHECK(selector.remove_small_regions(1.f, 2.f, 3.f, Transform3d::Identity(), int(white)) == 1);
+        CHECK(selector.num_facets(white) == 0);
+        CHECK(selector.num_facets(red) == 2 * cells);
+    }
+
+    SECTION("a line between two colors is shared by both of them")
+    {
+        // Red below the line, green above it. A vote would hand the whole line to one of them.
+        constexpr auto red = static_cast<EnforcerBlockerType>(4);
+        for (int j = 0; j < 10; ++j)
+            for (int i = 0; i < cells; ++i) {
+                selector.set_facet(2 * (j * cells + i), red);
+                selector.set_facet(2 * (j * cells + i) + 1, red);
+            }
+        for (int i = 0; i < cells; ++i)
+            paint_cell(i, 10);
+        CHECK(selector.remove_small_regions(1.f, 2.f, 3.f, Transform3d::Identity()) == 1);
+        CHECK(selector.num_facets(white) == 0);
+        CHECK(selector.num_facets(red) == 2 * 10 * cells + cells);
+        CHECK(selector.num_facets(green) == 2 * 9 * cells + cells);
+    }
+}
+
 TEST_CASE("Simplification remaps painting onto moved and renumbered faces", "[TriangleSelector][Simplify]")
 {
     const TriangleMesh source_mesh = make_cube(10., 10., 10.);
@@ -826,3 +924,4 @@ TEST_CASE("Simplification retains split paint and unpainted areas inside a coars
                         std::runtime_error);
     }
 }
+

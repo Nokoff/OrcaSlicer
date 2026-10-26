@@ -5,7 +5,9 @@
 #include <boost/container/small_vector.hpp>
 #include <boost/log/trivial.hpp>
 #include <cstddef>
+#include <limits>
 #include <map>
+#include <numeric>
 #include <queue>
 #include <unordered_map>
 #include <tbb/parallel_for.h>
@@ -577,9 +579,9 @@ void TriangleSelector::get_touching_leaf_triangles(int facet_idx, const Vec3i32 
             touching_triangles.emplace_back(neighbor_idx);
 }
 
-int TriangleSelector::remove_small_regions(float max_area, float blend_radius, const Transform3d &trafo)
+int TriangleSelector::remove_small_regions(float max_area, float max_width, float blend_radius, const Transform3d &trafo, int line_state)
 {
-    if (max_area <= 0.f)
+    if (max_area <= 0.f && max_width <= 0.f)
         return 0;
     blend_radius = std::max(blend_radius, 1e-3f);
 
@@ -650,22 +652,128 @@ int TriangleSelector::remove_small_regions(float max_area, float blend_radius, c
             }
         }
 
-        std::vector<int> specks;
+        // The pieces to repaint: whole regions up to max_area, and the thin parts of the other regions.
+        struct Piece
+        {
+            std::vector<int> triangles;
+            float            area   = 0.f;
+            int              region = -1;
+        };
+        std::vector<Piece> pieces;
+        std::vector<int>   piece_of(m_triangles.size(), -1);
         for (int region_idx = 0; region_idx < int(regions.size()); ++region_idx)
-            if (regions[region_idx].area <= max_area)
-                specks.push_back(region_idx);
-        std::sort(specks.begin(), specks.end(), [&regions](int l, int r) { return regions[l].area < regions[r].area; });
+            if (regions[region_idx].area <= max_area) {
+                for (int tr_idx : regions[region_idx].triangles)
+                    piece_of[tr_idx] = int(pieces.size());
+                pieces.push_back({regions[region_idx].triangles, regions[region_idx].area, region_idx});
+            }
+
+        // Thin lines and dashes: parts of a region narrower than max_width, whatever their area. The depth of a triangle
+        // is its distance from the border of its region, walking inside the region. Triangles at least half the width
+        // deep form the core of the region, and everything within max_width of the core is kept (twice the depth, as the
+        // walk over triangle centers overestimates distances and must not shave the borders of wide regions). What is
+        // left are strips with no core, or tabs sticking out of a core, both narrower than max_width. Done in the first
+        // pass only, as the borders move once a strip is gone and the regions would erode further pass after pass.
+        if (pass == 0 && max_width > 0.f) {
+            constexpr float  unreached = std::numeric_limits<float>::max();
+            std::vector<Vec3f> centroid(m_triangles.size(), Vec3f::Zero());
+            for (int tr_idx : leaves)
+                centroid[tr_idx] = leaf_centroid(tr_idx);
+
+            using QueueItem = std::pair<float, int>;
+            // Walks the surface from the triangles with a source point, inside their region, up to the limit. Every
+            // triangle reached takes the nearest source point of its neighbors and the straight distance to it: a sum
+            // of steps between triangle centers zigzags and would make strips look a third wider than they are.
+            const auto spread = [&](std::vector<float> &distance, std::vector<Vec3f> &source, float limit) {
+                std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> queue;
+                for (int tr_idx : leaves)
+                    if (distance[tr_idx] < unreached)
+                        queue.emplace(distance[tr_idx], tr_idx);
+                while (!queue.empty()) {
+                    const auto [dist, current] = queue.top();
+                    queue.pop();
+                    if (dist > distance[current])
+                        continue;
+                    for (int next : adjacency[current]) {
+                        if (region_of[next] != region_of[current])
+                            continue;
+                        const float next_dist = (centroid[next] - source[current]).norm();
+                        if (next_dist <= limit && next_dist < distance[next]) {
+                            distance[next] = next_dist;
+                            source[next]   = source[current];
+                            queue.emplace(next_dist, next);
+                        }
+                    }
+                }
+            };
+
+            // The border of a triangle is taken halfway to the center of its neighbor of another region.
+            const float        half_width = 0.5f * max_width;
+            std::vector<float> depth(m_triangles.size(), unreached);
+            std::vector<Vec3f> source(m_triangles.size(), Vec3f::Zero());
+            for (int tr_idx : leaves)
+                for (int next : adjacency[tr_idx])
+                    if (region_of[next] != region_of[tr_idx]) {
+                        const Vec3f border = 0.5f * (centroid[next] + centroid[tr_idx]);
+                        const float dist   = (border - centroid[tr_idx]).norm();
+                        if (dist < depth[tr_idx]) {
+                            depth[tr_idx]  = dist;
+                            source[tr_idx] = border;
+                        }
+                    }
+            // Nothing deeper than half_width matters, so the walk can stop there.
+            spread(depth, source, half_width);
+
+            std::vector<float> from_core(m_triangles.size(), unreached);
+            for (int tr_idx : leaves)
+                if (depth[tr_idx] >= half_width) {
+                    from_core[tr_idx] = 0.f;
+                    source[tr_idx]    = centroid[tr_idx];
+                }
+            spread(from_core, source, max_width);
+
+            for (int seed : leaves) {
+                if (piece_of[seed] != -1 || from_core[seed] < unreached ||
+                    (line_state >= 0 && int(m_triangles[seed].get_state()) != line_state))
+                    continue;
+                const int piece_idx = int(pieces.size());
+                pieces.push_back({{}, 0.f, region_of[seed]});
+                std::queue<int> queue;
+                queue.push(seed);
+                piece_of[seed] = piece_idx;
+                while (!queue.empty()) {
+                    const int current = queue.front();
+                    queue.pop();
+                    pieces[piece_idx].triangles.push_back(current);
+                    pieces[piece_idx].area += leaf_area(current);
+                    for (int next : adjacency[current])
+                        if (piece_of[next] == -1 && region_of[next] == region_of[seed] && from_core[next] == unreached) {
+                            piece_of[next] = piece_idx;
+                            queue.push(next);
+                        }
+                }
+            }
+        }
+
+        std::vector<int> specks(pieces.size());
+        std::iota(specks.begin(), specks.end(), 0);
+        std::sort(specks.begin(), specks.end(), [&pieces](int l, int r) { return pieces[l].area < pieces[r].area; });
 
         int repainted = 0;
-        for (int region_idx : specks) {
-            const Region &region = regions[region_idx];
+        for (int piece_idx : specks) {
+            const Piece  &piece  = pieces[piece_idx];
+            const Region &region = regions[piece.region];
 
             // A neighbor repainted into this very state earlier in the pass makes this part of a bigger region, which
-            // may be above the limit. Leave the decision to the next pass.
+            // may be above the limit. Leave the decision to the next pass. A thin piece does not get any wider from a
+            // speck that joined it, and it is only found in the first pass, so it goes anyway.
+            const bool is_thin = piece.region >= 0 && regions[piece.region].area > max_area;
             bool joined_another_region = false;
-            for (int tr_idx : region.triangles) {
+            for (int tr_idx : piece.triangles) {
+                if (is_thin)
+                    break;
                 for (int next : adjacency[tr_idx])
-                    if (region_of[next] != region_idx && m_triangles[next].get_state() == region.state) {
+                    if (region_of[next] != piece.region && m_triangles[next].get_state() == region.state) {
                         joined_another_region = true;
                         break;
                     }
@@ -675,6 +783,56 @@ int TriangleSelector::remove_small_regions(float max_area, float blend_radius, c
             if (joined_another_region)
                 continue;
 
+            if (is_thin) {
+                // A line is filled by the colors along its sides, each growing into it up to the middle, so a line between
+                // white and blue is split between them. A vote over the surface around it would hand the whole line to
+                // whatever color covers most of the area nearby, a face or a hand next to a collar for example.
+                std::unordered_map<int, float>               distance;
+                std::unordered_map<int, std::pair<Vec3f, int>> nearest; // border point and the state found there
+                using QueueItem = std::pair<float, int>;
+                std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> queue;
+                for (int tr_idx : piece.triangles) {
+                    const Vec3f center = leaf_centroid(tr_idx);
+                    for (int next : adjacency[tr_idx]) {
+                        const EnforcerBlockerType state = m_triangles[next].get_state();
+                        if (piece_of[next] == piece_idx || state == region.state)
+                            continue;
+                        const Vec3f border = 0.5f * (center + leaf_centroid(next));
+                        const float dist   = (border - center).norm();
+                        auto        found  = distance.find(tr_idx);
+                        if (found == distance.end() || dist < found->second) {
+                            distance[tr_idx] = dist;
+                            nearest[tr_idx]  = {border, int(state)};
+                        }
+                    }
+                    if (auto found = distance.find(tr_idx); found != distance.end())
+                        queue.emplace(found->second, tr_idx);
+                }
+                while (!queue.empty()) {
+                    const auto [dist, current] = queue.top();
+                    queue.pop();
+                    if (dist > distance[current])
+                        continue;
+                    for (int next : adjacency[current]) {
+                        if (piece_of[next] != piece_idx)
+                            continue;
+                        const float next_dist = (leaf_centroid(next) - nearest[current].first).norm();
+                        auto        found     = distance.find(next);
+                        if (found == distance.end() || next_dist < found->second) {
+                            distance[next] = next_dist;
+                            nearest[next]  = nearest[current];
+                            queue.emplace(next_dist, next);
+                        }
+                    }
+                }
+                if (nearest.empty())
+                    continue;
+                for (const auto &[tr_idx, found] : nearest)
+                    m_triangles[tr_idx].set_state(EnforcerBlockerType(found.second));
+                ++repainted;
+                continue;
+            }
+
             // Walk the surface outwards from the speck in every direction (Dijkstra over triangle centers, so the walk
             // follows the mesh and never leaks through a thin wall) and let every triangle of another state vote for its
             // state with its area, weighted down linearly with the distance. The walk is bounded by the blend radius,
@@ -682,7 +840,7 @@ int TriangleSelector::remove_small_regions(float max_area, float blend_radius, c
             std::unordered_map<int, float> distance;
             using QueueItem = std::pair<float, int>;
             std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> queue;
-            for (int tr_idx : region.triangles) {
+            for (int tr_idx : piece.triangles) {
                 distance[tr_idx] = 0.f;
                 queue.emplace(0.f, tr_idx);
             }
@@ -692,18 +850,18 @@ int TriangleSelector::remove_small_regions(float max_area, float blend_radius, c
                 queue.pop();
                 if (dist > distance[current])
                     continue;
-                const bool in_region = region_of[current] == region_idx;
-                if (!in_region && m_triangles[current].get_state() != region.state) {
+                const bool in_piece = piece_of[current] == piece_idx;
+                if (!in_piece && m_triangles[current].get_state() != region.state) {
                     const float falloff = std::max(0.05f, 1.f - dist / blend_radius);
                     votes[int(m_triangles[current].get_state())] += leaf_area(current) * falloff;
                 }
                 const Vec3f center = leaf_centroid(current);
                 for (int next : adjacency[current]) {
-                    if (region_of[next] == region_idx)
+                    if (piece_of[next] == piece_idx)
                         continue;
                     const float next_dist = dist + (leaf_centroid(next) - center).norm();
                     // Direct neighbors are accepted at any distance, the rest only within the radius.
-                    if (next_dist > blend_radius && !in_region)
+                    if (next_dist > blend_radius && !in_piece)
                         continue;
                     auto found = distance.find(next);
                     if (found == distance.end() || next_dist < found->second) {
@@ -716,7 +874,7 @@ int TriangleSelector::remove_small_regions(float max_area, float blend_radius, c
                 continue;
 
             const auto winner = std::max_element(votes.begin(), votes.end(), [](const auto &l, const auto &r) { return l.second < r.second; });
-            for (int tr_idx : region.triangles)
+            for (int tr_idx : piece.triangles)
                 m_triangles[tr_idx].set_state(EnforcerBlockerType(winner->first));
             ++repainted;
         }
@@ -2014,29 +2172,39 @@ void TriangleSelector::get_facets(std::vector<indexed_triangle_set>& facets_per_
     facets_per_type.clear();
 
     int max_state = int(EnforcerBlockerType::NONE);
-    for (const Triangle &tr : m_triangles)
+    for (const Triangle& tr : m_triangles)
         if (tr.valid() && !tr.is_split())
             max_state = std::max(max_state, int(tr.get_state()));
 
-    for (int type = int(EnforcerBlockerType::NONE); type <= max_state; ++type) {
-        facets_per_type.emplace_back();
-        indexed_triangle_set& its = facets_per_type.back();
-        std::vector<int> vertex_map(m_vertices.size(), -1);
+    // Thumbnail generation needs every color. Bucket leaves once instead of
+    // scanning the entire mesh for each (possibly unused) filament ID.
+    std::vector<std::vector<const Triangle*>> triangles_per_type(max_state + 1);
+    for (const Triangle& tr : m_triangles)
+        if (tr.valid() && !tr.is_split())
+            triangles_per_type[int(tr.get_state())].push_back(&tr);
 
-        for (const Triangle& tr : m_triangles) {
-            if (tr.valid() && !tr.is_split() && tr.get_state() == (EnforcerBlockerType)type) {
-                stl_triangle_vertex_indices indices;
-                for (int i = 0; i < 3; ++i) {
-                    int j = tr.verts_idxs[i];
-                    if (vertex_map[j] == -1) {
-                        vertex_map[j] = int(its.vertices.size());
-                        its.vertices.emplace_back(m_vertices[j].v);
-                    }
-                    indices[i] = vertex_map[j];
+    facets_per_type.resize(max_state + 1);
+    std::vector<int> vertex_map(m_vertices.size(), -1);
+    for (int type = int(EnforcerBlockerType::NONE); type <= max_state; ++type) {
+        indexed_triangle_set& its = facets_per_type[type];
+        its.indices.reserve(triangles_per_type[type].size());
+        for (const Triangle* triangle : triangles_per_type[type]) {
+            const Triangle&             tr = *triangle;
+            stl_triangle_vertex_indices indices;
+            for (int i = 0; i < 3; ++i) {
+                int j = tr.verts_idxs[i];
+                if (vertex_map[j] == -1) {
+                    vertex_map[j] = int(its.vertices.size());
+                    its.vertices.emplace_back(m_vertices[j].v);
                 }
-                its.indices.emplace_back(indices);
+                indices[i] = vertex_map[j];
             }
+            its.indices.emplace_back(indices);
         }
+        // Only vertices touched by this color need clearing before the next.
+        for (const Triangle* triangle : triangles_per_type[type])
+            for (int vertex_idx : triangle->verts_idxs)
+                vertex_map[vertex_idx] = -1;
     }
 }
 

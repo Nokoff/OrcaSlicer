@@ -14,6 +14,7 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/TriangleSelector.hpp"
 #include "libslic3r/Geometry.hpp"
+#include "libslic3r/Model.hpp"
 
 using namespace Slic3r;
 
@@ -102,6 +103,104 @@ void paint_grid_cell(TriangleSelector& selector, int side, int x, int y, Enforce
 }
 
 } // namespace
+
+TEST_CASE("Paint export preserves hexadecimal nibble order and triangle boundaries", "[PaintingSave]")
+{
+    TriangleSelector::TriangleSplittingData data;
+    data.triangles_to_split.emplace_back(2, 0);
+    data.triangles_to_split.emplace_back(7, 64);
+    // First triangle contains every hex digit; the second is a large split tree payload.
+    constexpr size_t digits = 65536;
+    for (size_t i = 0; i < 16 + digits; ++i)
+        for (int bit = 0; bit < 4; ++bit)
+            data.bitstream.push_back(((i % 16) >> bit) & 1);
+
+    Model        model;
+    ModelVolume* volume     = model.add_object()->add_volume(TriangleMesh(painting_grid(1)));
+    auto&        annotation = volume->mmu_segmentation_facets;
+    annotation.set_data(std::move(data));
+    CHECK(annotation.get_triangle_as_string(0).empty());
+    CHECK(annotation.get_triangle_as_string(3).empty());
+    CHECK(annotation.get_triangle_as_string(8).empty());
+    CHECK(annotation.get_triangle_as_string(2) == "FEDCBA9876543210");
+    std::string expected;
+    for (size_t i = 0; i < digits / 16; ++i)
+        expected += "FEDCBA9876543210";
+    CHECK(annotation.get_triangle_as_string(7) == expected);
+}
+
+TEST_CASE("Paint thumbnail partitions preserve per-color geometry", "[TriangleSelector][PaintingSave]")
+{
+    TriangleMesh     mesh(painting_grid(12));
+    TriangleSelector selector(mesh);
+    const auto       high_state = static_cast<EnforcerBlockerType>(120);
+    for (int i = 0; i < int(mesh.its.indices.size()); ++i)
+        if (i % 3 != 0)
+            selector.set_facet(i, i % 3 == 1 ? EnforcerBlockerType::Extruder1 : high_state);
+    paint_grid_cell(selector, 12, 6, 6, EnforcerBlockerType::Extruder2);
+
+    std::vector<indexed_triangle_set> partitions;
+    selector.get_facets(partitions);
+    REQUIRE(partitions.size() == 121);
+    for (size_t state = 0; state < partitions.size(); ++state) {
+        const auto expected = selector.get_facets(static_cast<EnforcerBlockerType>(state));
+        CHECK(partitions[state].vertices == expected.vertices);
+        CHECK(partitions[state].indices == expected.indices);
+    }
+    selector.reset();
+    selector.get_facets(partitions);
+    REQUIRE(partitions.size() == 1);
+    CHECK(partitions.front().indices.size() == mesh.its.indices.size());
+}
+
+TEST_CASE("Benchmark painting save preparation", "[.benchmark][PaintingSave]")
+{
+    TriangleMesh     mesh(painting_grid(384));
+    TriangleSelector selector(mesh);
+    for (int i = 0; i < int(mesh.its.indices.size()); ++i)
+        selector.set_facet(i, static_cast<EnforcerBlockerType>(i % 2 ? 120 : 1));
+
+    const auto                        start = std::chrono::steady_clock::now();
+    std::vector<indexed_triangle_set> previous;
+    for (int state = 0; state <= 120; ++state)
+        previous.push_back(selector.get_facets(static_cast<EnforcerBlockerType>(state)));
+    const auto                        grouped_start = std::chrono::steady_clock::now();
+    std::vector<indexed_triangle_set> grouped;
+    selector.get_facets(grouped);
+    const auto grouped_end = std::chrono::steady_clock::now();
+    REQUIRE(previous.size() == grouped.size());
+    for (size_t i = 0; i < grouped.size(); ++i) {
+        REQUIRE(previous[i].vertices == grouped[i].vertices);
+        REQUIRE(previous[i].indices == grouped[i].indices);
+    }
+
+    Model model;
+    auto& annotation = model.add_object()->add_volume(TriangleMesh(painting_grid(1)))->mmu_segmentation_facets;
+    TriangleSelector::TriangleSplittingData data;
+    data.triangles_to_split.emplace_back(0, 0);
+    data.bitstream.resize(4 * 262144);
+    for (size_t i = 0; i < data.bitstream.size(); ++i)
+        data.bitstream[i] = i % 3 == 0;
+    annotation.set_data(std::move(data));
+    const auto& bits         = annotation.get_data().bitstream;
+    const auto  encode_start = std::chrono::steady_clock::now();
+    std::string previous_encoding;
+    for (size_t offset = 0; offset < bits.size(); offset += 4) {
+        int code = 0;
+        for (int bit = 3; bit >= 0; --bit)
+            code = (code << 1) | int(bits[offset + bit]);
+        previous_encoding.insert(previous_encoding.begin(), "0123456789ABCDEF"[code]);
+    }
+    const auto encode_new_start = std::chrono::steady_clock::now();
+    const auto encoding         = annotation.get_triangle_as_string(0);
+    const auto encode_end       = std::chrono::steady_clock::now();
+    REQUIRE(encoding == previous_encoding);
+    const auto ms = [](auto elapsed) { return std::chrono::duration<double, std::milli>(elapsed).count(); };
+    std::cout << "Painting thumbnail mesh: previous=" << ms(grouped_start - start) << " ms optimized=" << ms(grouped_end - grouped_start)
+              << " ms\n"
+              << "Painting hex export: previous=" << ms(encode_new_start - encode_start)
+              << " ms optimized=" << ms(encode_end - encode_new_start) << " ms\n";
+}
 
 TEST_CASE("Sparse brush updates cover all changed leaves on a dense mesh", "[TriangleSelector][PaintingUpdates]")
 {

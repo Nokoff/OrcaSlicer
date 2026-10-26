@@ -460,9 +460,13 @@ public:
     // that dominates the surface around it: all triangles of other states within blend_radius of the region, in every
     // direction, vote for their state with their area, weighted down with their distance. A dot or a line surrounded by
     // green turns green. Regions with no neighbor of another state (a small separate painted part) are left alone.
+    // Thin lines and dashes narrower than max_width, and thin tabs sticking out of wider regions, are repainted the same
+    // way whatever their area (0 turns this off), each filled by the colors along its sides up to its middle. A line
+    // width tells nothing about which lines are wanted, as a stray dark line can be as wide as a white trim, so
+    // line_state limits this to the lines of one state (-1 for all of them).
     // Areas and distances are measured after applying the linear part of the given transformation, so they are in world
     // units. Repeats until nothing changes. Returns the number of regions that were repainted.
-    int remove_small_regions(float max_area, float blend_radius, const Transform3d &trafo);
+    int remove_small_regions(float max_area, float max_width, float blend_radius, const Transform3d &trafo, int line_state = -1);
 
     // Orca: smooth edges. Rounds off the jagged borders between painted regions. The triangles within radius of a border
     // are first split into small ones, then each of them takes the state that dominates the surface around it within

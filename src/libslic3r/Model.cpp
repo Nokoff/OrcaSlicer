@@ -3900,21 +3900,25 @@ std::string FacetsAnnotation::get_triangle_as_string(int triangle_idx) const
 {
     std::string out;
 
-    auto triangle_it = std::lower_bound(m_data.triangles_to_split.begin(), m_data.triangles_to_split.end(), triangle_idx, [](const TriangleSelector::TriangleBitStreamMapping &l, const int r) { return l.triangle_idx < r; });
+    auto triangle_it = std::lower_bound(m_data.triangles_to_split.begin(), m_data.triangles_to_split.end(), triangle_idx,
+                                        [](const TriangleSelector::TriangleBitStreamMapping& l, const int r) { return l.triangle_idx < r; });
     if (triangle_it != m_data.triangles_to_split.end() && triangle_it->triangle_idx == triangle_idx) {
-        int offset = triangle_it->bitstream_start_idx;
-        int end    = ++ triangle_it == m_data.triangles_to_split.end() ? int(m_data.bitstream.size()) : triangle_it->bitstream_start_idx;
-        while (offset < end) {
+        const int start = triangle_it->bitstream_start_idx;
+        int offset = ++triangle_it == m_data.triangles_to_split.end() ? int(m_data.bitstream.size()) : triangle_it->bitstream_start_idx;
+        // The file format stores nibbles in reverse order. Walk backwards rather
+        // than repeatedly shifting an increasingly large string to prepend them.
+        out.reserve((offset - start) / 4);
+        while (offset > start) {
+            offset -= 4;
             int next_code = 0;
-            for (int i=3; i>=0; --i) {
+            for (int i = 3; i >= 0; --i) {
                 next_code = next_code << 1;
                 next_code |= int(m_data.bitstream[offset + i]);
             }
-            offset += 4;
 
-            assert(next_code >=0 && next_code <= 15);
-            char digit = next_code < 10 ? next_code + '0' : (next_code-10)+'A';
-            out.insert(out.begin(), digit);
+            assert(next_code >= 0 && next_code <= 15);
+            char digit = next_code < 10 ? next_code + '0' : (next_code - 10) + 'A';
+            out.push_back(digit);
         }
     }
     return out;
