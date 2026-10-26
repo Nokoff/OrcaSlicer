@@ -731,6 +731,9 @@ bool GLGizmoEmboss::on_init()
 std::string GLGizmoEmboss::on_get_name() const { return _u8L("Emboss"); }
 
 void GLGizmoEmboss::on_render() {
+    if (m_keep_up)
+        return;
+
     // no volume selected
     const Selection &selection = m_parent.get_selection();
     if (m_volume == nullptr ||
@@ -2879,6 +2882,7 @@ void GLGizmoEmboss::draw_advanced()
         0.f : (*stored_style->angle * -180 / M_PI);
     float* def_angle_deg = stored_style ?
         &def_angle_deg_val : nullptr;
+    m_imgui->disabled_begin(m_keep_up);
     if (rev_slider(tr.rotation, angle_deg, def_angle_deg, _u8L("Undo rotation"), 
         limits.angle.min, limits.angle.max, u8"%.2f °",
                    _L("Rotate text Clock-wise."))) {
@@ -2913,6 +2917,7 @@ void GLGizmoEmboss::draw_advanced()
         if (use_surface || font_prop.per_glyph)
             process();
     }
+    m_imgui->disabled_end();//m_imgui->disabled_begin(m_keep_up);
 
     // Keep up - lock button icon
     if (!m_volume->is_the_only_one_part()) {
@@ -2929,6 +2934,8 @@ void GLGizmoEmboss::draw_advanced()
                 _u8L("Lock the text's rotation when moving text along the object's surface.")
             , m_gui_cfg->max_tooltip_width);
     }
+    else
+        m_keep_up = false;
 
     // when more collection add selector
     if (ff.font_file->infos.size() > 1) {
