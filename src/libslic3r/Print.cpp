@@ -3064,6 +3064,7 @@ Points Print::first_layer_wipe_tower_corners(bool check_wipe_tower_existance) co
         // Use the generated bounding box for the ribbed tower, which already includes its actual
         // footprint, then expand it by the brim that prints around that footprint.
         const double brim_width = m_wipe_tower_data.brim_width;
+        const double tower_width = m_wipe_tower_data.width > 0.f ? m_wipe_tower_data.width : m_config.prime_tower_width.value;
         double width = m_wipe_tower_data.bbx.max.x() - m_wipe_tower_data.bbx.min.x() + 2. * brim_width;
         double depth = m_wipe_tower_data.bbx.max.y() - m_wipe_tower_data.bbx.min.y() + 2. * brim_width;
         Vec2d pt0 = m_wipe_tower_data.bbx.min + m_wipe_tower_data.rib_offset.cast<double>() - Vec2d(brim_width, brim_width);
@@ -3077,7 +3078,7 @@ Points Print::first_layer_wipe_tower_corners(bool check_wipe_tower_existance) co
         // Now the stabilization cone.
         Vec2d center = (pts[0] + pts[2])/2.;
         const auto [cone_R, cone_x_scale] = WipeTower2::get_wipe_tower_cone_base(tower_width, m_wipe_tower_data.height, m_wipe_tower_data.depth, m_config.wipe_tower_cone_angle);
-        double r = cone_R + reach;
+        double r = cone_R + brim_width;
         for (double alpha = 0.; alpha<2*M_PI; alpha += M_PI/20.)
             pts.emplace_back(center + r*Vec2d(std::cos(alpha)/cone_x_scale, std::sin(alpha)));
 
