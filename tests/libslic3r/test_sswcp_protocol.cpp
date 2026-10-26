@@ -113,6 +113,7 @@ TEST_CASE("Complete cached slots override direct nozzle data atomically", "[SSWC
     REQUIRE(SSWCPProtocol::select_complete_cached_nozzle_info(
         {{"0.4", "standard"}, {"0.4", ""}}, diameters, flows));
     CHECK(diameters == std::vector<std::string>{"0.4", "0.4"});
+    // Incomplete cached flows must not wipe freshly resolved direct values (see SSWCPProtocol.hpp).
     CHECK(flows == std::vector<std::string>{"high_flow"});
 }
 

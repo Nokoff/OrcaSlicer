@@ -9,6 +9,7 @@
 #include "libslic3r/FilamentColorLibrary.hpp" // kFullSpectrumSlotCount (recommended slot write-back)
 #include "libslic3r/Config.hpp"
 #include "libslic3r/MixedFilament.hpp"
+#include "libslic3r/MixedFilamentConfigRemap.hpp"
 #include "libslic3r/filament_mixer.h"
 #include "common_func/common_func.hpp"
 #include "slic3r/Utils/SnapLogClient.hpp"
@@ -8588,6 +8589,13 @@ void Sidebar::merge_mixed_filament(size_t from_id, size_t to_id,
     
     // Build remap table using PresetBundle method
     pb.build_merge_filament_remap(from_id, to_id, total_filaments);
+    // The remap is 1-based and also accounts for a mixed target shifting down
+    // when it follows the deleted source.
+    const std::vector<unsigned int> merge_remap = pb.last_filament_id_remap();
+    const int merged_target_id =
+        merge_remap.size() > from_id + 1 && merge_remap[from_id + 1] > 0
+            ? int(merge_remap[from_id + 1] - 1)
+            : -1;
     
     // Mark source mixed filament as deleted
     mfs[source_mixed_idx].deleted = true;
@@ -8604,9 +8612,11 @@ void Sidebar::merge_mixed_filament(size_t from_id, size_t to_id,
     if (auto* opt = pb.project_config.option<ConfigOptionBools>("filament_is_mixed"))
         is_mixed_snapshot = opt->values;
     
-    // Update objects to use new filament IDs
+    // Pass the remapped target instead of -1 so ObjectList writes the selected
+    // physical/mixed target to config-level extruder assignments rather than
+    // falling back to filament 1.
     size_t total_after = pb.mixed_filaments.total_filaments(num_physical);
-    wxGetApp().plater()->on_filaments_delete(total_after, from_id, -1, is_mixed_snapshot);
+    wxGetApp().plater()->on_filaments_delete(total_after, from_id, merged_target_id, is_mixed_snapshot);
     
     BOOST_LOG_TRIVIAL(info) << "Mixed filament merge completed. Total filaments after: " << total_after;
     
@@ -8727,16 +8737,51 @@ void Sidebar::delete_filament(size_t filament_id, int replace_filament_id,
         pb.build_merge_filament_remap(filament_id, replace_filament_id, old_total_filaments, old_num_physical);
         
         BOOST_LOG_TRIVIAL(info) << "Built custom remap for physical to mixed merge (accounts for virtual ID changes)";
-        
-        // Call on_filaments_delete with -1 to trigger remap usage
-        // This updates object colors using the remap table
-        wxGetApp().plater()->on_filaments_delete(old_total_filaments, filament_id, -1, is_mixed_snapshot);
-        
-        // Now delete the physical filament
+
+        // Preserve the custom merge target for config-level object/volume extruder
+        // assignments. The count update below replaces PresetBundle's transient
+        // remap with its generic deletion remap, so restore this merge-specific
+        // table before Plater::on_filaments_delete() consumes it.
+        const std::vector<unsigned int> physical_to_mixed_remap = pb.last_filament_id_remap();
+        const int merged_target_id =
+            physical_to_mixed_remap.size() > filament_id + 1 &&
+            physical_to_mixed_remap[filament_id + 1] > 0
+                ? int(physical_to_mixed_remap[filament_id + 1] - 1)
+                : -1;
+
+        // Update PresetBundle before refreshing the sidebar. Sidebar::on_filaments_delete()
+        // first reduces the UI physical count and then reloads custom mixed definitions.
+        // If it runs while the bundle still contains old physical IDs, a row such as
+        // old (3, 5) is temporarily invalid against four UI slots and is discarded.
+        // Updating first renumbers that row to (3, 4) and keeps the merge target alive.
         pb.update_num_filaments(filament_id);
-        pb.consume_last_filament_id_remap(); // discard the remap built by update_num_filaments
+        (void)pb.consume_last_filament_id_remap();
+        pb.set_filament_id_remap(physical_to_mixed_remap);
+
+        const size_t total_after_delete =
+            pb.mixed_filaments.total_filaments(pb.filament_presets.size());
         wxGetApp().plater()->get_partplate_list().on_filament_deleted(
-            pb.filament_presets.size(), filament_id);
+            total_after_delete, filament_id);
+
+        // Pass the post-deletion mixed target so painted states and config-level
+        // object/volume extruder assignments follow the same remap.
+        wxGetApp().plater()->on_filaments_delete(
+            total_after_delete, filament_id, merged_target_id, is_mixed_snapshot);
+
+        // Resynchronize filament_colour from the post-deletion project config;
+        // GLCanvas3D reads this config when updating GLVolume colors.
+        wxGetApp().plater()->update_filament_colors_in_full_config();
+
+        // Refresh controls that may still hold the pre-deletion filament list.
+        for (size_t idx = filament_id; idx < p->combos_filament.size(); ++idx) {
+            if (p->combos_filament[idx])
+                p->combos_filament[idx]->update();
+        }
+        obj_list()->update_objects_list_filament_column(pb.filament_presets.size());
+        update_dynamic_filament_list();
+        update_mixed_filament_panel(false);
+        update_color_mix_panel();
+        Layout();
 
         BOOST_LOG_TRIVIAL(info) << "Physical to mixed merge completed using custom remap mechanism";
 
@@ -9139,10 +9184,12 @@ void Sidebar::cleanup_unused_filaments_after_batch_match(const BatchMatchResult 
     if (auto *opt = pb->project_config.option<ConfigOptionString>("mixed_filament_definitions"))
         opt->value = pb->mixed_filaments.serialize_custom_entries();
 
-    // Rebuild panels once (skipped per-deletion in the loop above).
+    // Rebuild panels once (skipped per-deletion in the loop above). The object-list
+    // refresh performs the single final Plater update through its model sync path.
     update_mixed_filament_panel();
     update_color_mix_panel();
-    wxGetApp().plater()->update();
+    obj_list()->update_objects_list_filament_column(pb->filament_presets.size());
+    obj_list()->refresh_layer_range_filament_items();
 }
 
 void Sidebar::add_custom_filament(wxColour new_col) {
@@ -15905,6 +15952,7 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
         if (!has_error && !evt.cancelled() && evt.success()) {
             SNAP_LOG_BATCH(Info, "slice completed", {"eventName","slice_completed"});
         }
+        m_slice_all = false;
         m_is_slicing = false;
         this->preview->reload_print(false);
         /* BBS if in publishing progress */
@@ -16528,6 +16576,9 @@ void Plater::priv::on_filament_color_changed(wxCommandEvent &event)
     wxGetApp().preset_bundle->update_multi_material_filament_presets();
     sidebar->update_mixed_filament_panel();
     sidebar->update_color_mix_panel();
+
+    if (GLCanvas3D* canvas = q->get_view3D_canvas3D())
+        canvas->get_gizmos_manager().update_data();
 }
 
 void Plater::priv::install_network_plugin(wxCommandEvent &event)
@@ -22767,21 +22818,44 @@ void Plater::on_filaments_delete(size_t num_filaments, size_t filament_id, int r
     // update UI
     sidebar().on_filaments_delete(filament_id);
 
-    // update global feature filament selections
-    static const char* keys[] = {"wall_filament", "sparse_infill_filament", "solid_infill_filament",
-                                 "support_filament", "support_interface_filament"};
-    for (auto key : keys)
-        if (p->config->has(key)) {
-            if (p->config->opt_int(key) == filament_id + 1)
-                (*(p->config)).erase(key);
-            else {
-                int new_value = p->config->opt_int(key) > filament_id ? p->config->opt_int(key) - 1 : p->config->opt_int(key);
-                (*(p->config)).set_key_value(key, new ConfigOptionInt(new_value));
+    // An explicit remap also covers mixed-row deletion/cascade cases that cannot
+    // be expressed by the naive decrement path below.
+    if (should_remap_states) {
+        remap_dynamic_config_feature_filament_ids(*p->config, id_remap, num_filaments);
+    } else {
+        for (const std::string &key : mixed_filament_feature_keys()) {
+            if (!p->config->has(key))
+                continue;
+
+            if (p->config->opt_int(key) == static_cast<int>(filament_id + 1)) {
+                p->config->erase(key);
+            } else {
+                const int old_id = p->config->opt_int(key);
+                const int new_id = old_id > static_cast<int>(filament_id) ? old_id - 1 : old_id;
+                p->config->set(key, new_id);
             }
         }
+    }
 
     // update object/volume/support(object and volume) filament id
-    sidebar().obj_list()->update_objects_list_filament_column_when_delete_filament(filament_id, num_filaments, replace_filament_id);
+    if (should_remap_states) {
+        for (ModelObject* mo : wxGetApp().model().objects) {
+            remap_model_config_filament_ids(mo->config, id_remap, num_filaments);
+            for (ModelVolume* mv : mo->volumes)
+                remap_model_config_filament_ids(mv->config, id_remap, num_filaments);
+            for (auto &layer_range : mo->layer_config_ranges)
+                remap_model_config_filament_ids(layer_range.second, id_remap, num_filaments);
+        }
+        // Batch physical deletion defers list and scene refresh until its final
+        // composite rebuild; other deletion paths refresh immediately.
+        if (p->m_batch_physical_deletion == 0) {
+            sidebar().obj_list()->update_objects_list_filament_column(
+                std::max<size_t>(sidebar().combos_filament().size(), 1));
+            sidebar().obj_list()->refresh_layer_range_filament_items();
+        }
+    } else {
+        sidebar().obj_list()->update_objects_list_filament_column_when_delete_filament(filament_id, num_filaments, replace_filament_id);
+    }
 
     // update customize gcode
     for (auto item = p->model.plates_custom_gcodes.begin(); item != p->model.plates_custom_gcodes.end(); ++item) {
