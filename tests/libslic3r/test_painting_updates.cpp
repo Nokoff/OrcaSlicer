@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <set>
 #include <vector>
@@ -15,6 +17,7 @@
 #include "libslic3r/TriangleSelector.hpp"
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/Utils.hpp"
 
 using namespace Slic3r;
 
@@ -127,6 +130,79 @@ TEST_CASE("Paint export preserves hexadecimal nibble order and triangle boundari
     for (size_t i = 0; i < digits / 16; ++i)
         expected += "FEDCBA9876543210";
     CHECK(annotation.get_triangle_as_string(7) == expected);
+}
+
+TEST_CASE("Imported painting collapses only uniformly colored subtrees", "[TriangleSelector][PaintingSave][PaintingCompaction]")
+{
+    const auto uniform_tree = [](std::string leaf, int depth, char split_code, int children) {
+        for (int level = 0; level < depth; ++level) {
+            std::string parent;
+            for (int child = 0; child < children; ++child)
+                parent += leaf;
+            parent += split_code;
+            leaf = std::move(parent);
+        }
+        return leaf;
+    };
+    Model model;
+    auto& annotation = model.add_object()->add_volume(TriangleMesh(painting_grid(3)))->mmu_segmentation_facets;
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {uniform_tree("8", 6, '3', 4), "8"},
+        {uniform_tree("4", 5, '9', 2), "4"},
+        {uniform_tree("0", 4, '6', 3), "0"},
+        {uniform_tree("0C", 4, '3', 4), "0C"},
+        {uniform_tree("0FC", 3, '2', 3), "0FC"},
+        {"88483", "88483"},
+        {uniform_tree("8", 3, '3', 4) + "4" + uniform_tree("8", 2, '3', 4) + "83", "84883"},
+        // Different extended states must remain distinct.
+        {"0C1C0C1C3", "0C1C0C1C3"},
+    };
+    int facet = 0;
+    for (const auto& [input, expected] : cases) {
+        annotation.set_triangle_from_string(facet, input);
+        CHECK(annotation.get_triangle_as_string(facet) == expected);
+        ++facet;
+    }
+    const auto& states = annotation.get_data().used_states;
+    CHECK(states[0]);
+    CHECK(states[1]);
+    CHECK(states[2]);
+    CHECK(states[3]);
+    CHECK(states[4]);
+    CHECK(states[18]);
+
+    // Compaction is stable across saving and loading, including offsets between original facets.
+    Model roundtrip_model;
+    auto& roundtrip = roundtrip_model.add_object()->add_volume(TriangleMesh(painting_grid(3)))->mmu_segmentation_facets;
+    for (int i = 0; i < facet; ++i)
+        roundtrip.set_triangle_from_string(i, annotation.get_triangle_as_string(i));
+    CHECK(roundtrip.get_data() == annotation.get_data());
+}
+
+TEST_CASE("Compacted imported paint remains editable by a circle brush", "[TriangleSelector][PaintingUpdates][PaintingCompaction]")
+{
+    TriangleMesh mesh(painting_grid(1));
+    Model        model;
+    auto&        annotation = model.add_object()->add_volume(mesh)->mmu_segmentation_facets;
+    annotation.set_triangle_from_string(0, "888838888388883888833");
+    REQUIRE(annotation.get_triangle_as_string(0) == "8");
+    annotation.set_triangle_from_string(1, "4");
+    PaintingUpdateSelector selector(mesh);
+    selector.deserialize(annotation.get_data(), false);
+    CHECK(selector.leaf_count() == 2);
+    CHECK(selector.num_facets(EnforcerBlockerType::Extruder2) == 1);
+    CHECK(selector.num_facets(EnforcerBlockerType::Extruder1) == 1);
+
+    auto cursor = TriangleSelector::SinglePointCursor::cursor_factory(Vec3f(0.25f, 0.25f, 0.f), Vec3f(0.25f, 0.25f, 100.f), 0.15f,
+                                                                      TriangleSelector::CIRCLE, Transform3d::Identity(),
+                                                                      TriangleSelector::ClippingPlane());
+    selector.select_patch(0, std::move(cursor), EnforcerBlockerType::Extruder3, Transform3d::Identity(), true);
+    CHECK(selector.num_facets(EnforcerBlockerType::Extruder3) > 0);
+    CHECK(selector.num_facets(EnforcerBlockerType::Extruder2) > 0);
+    CHECK(selector.num_facets(EnforcerBlockerType::Extruder1) == 1);
+    PaintingUpdateSelector restored(mesh);
+    restored.deserialize(selector.serialize(), false);
+    CHECK(restored.serialize() == selector.serialize());
 }
 
 TEST_CASE("Paint thumbnail partitions preserve per-color geometry", "[TriangleSelector][PaintingSave]")
@@ -443,6 +519,112 @@ TEST_CASE("Painting data survives the undo stack encoding", "[TriangleSelector][
     CHECK(loaded == data);
     // Packed bits take an eighth of a byte each, plus the 8-byte mapping per split triangle.
     CHECK(stream.str().size() < data.bitstream.size() / 4 + 8 * data.triangles_to_split.size() + 256);
+}
+
+TEST_CASE("Imported project circle brush CPU benchmark", "[.][TriangleSelector][PaintingFileBenchmark]")
+{
+    const char* path = std::getenv("SLIC3R_PAINT_BENCHMARK_FILE");
+    if (path == nullptr)
+        SKIP("Set SLIC3R_PAINT_BENCHMARK_FILE to a local 3MF project");
+    const std::string previous_temporary_dir = temporary_dir();
+    if (const char* temp = std::getenv("TEMP"))
+        set_temporary_dir(temp);
+    struct RestoreTemporaryDirectory
+    {
+        std::string path;
+        ~RestoreTemporaryDirectory() { set_temporary_dir(path); }
+    } restore_temporary_dir{previous_temporary_dir};
+    using Clock       = std::chrono::steady_clock;
+    const auto start  = Clock::now();
+    Model      model  = Model::read_from_file(path, nullptr, nullptr, LoadStrategy::LoadModel | LoadStrategy::Silence);
+    const auto loaded = Clock::now();
+    REQUIRE_FALSE(model.objects.empty());
+    size_t original_triangles = 0;
+    size_t leaf_triangles     = 0;
+    size_t paint_characters   = 0;
+    double deserialize_ms     = 0.;
+    double brush_ms           = 0.;
+    double serialize_ms       = 0.;
+    double paint_export_ms    = 0.;
+    size_t brush_samples      = 0;
+    for (const ModelObject* object : model.objects) {
+        for (ModelVolume* volume : object->volumes) {
+            if (!volume->is_model_part())
+                continue;
+            const TriangleMesh& mesh = volume->mesh();
+            // Optional baseline dump: one original, unmodified hexadecimal paint record per facet.
+            // This bypasses import compaction only in this opt-in benchmark, never in the application.
+            if (const char* raw_path = std::getenv("SLIC3R_PAINT_RAW_RECORDS")) {
+                std::ifstream raw(raw_path);
+                REQUIRE(raw.good());
+                TriangleSelector::TriangleSplittingData original;
+                std::string                             record;
+                int                                     facet_idx = 0;
+                bool                                    valid     = true;
+                while (std::getline(raw, record)) {
+                    if (!record.empty()) {
+                        original.triangles_to_split.emplace_back(facet_idx, int(original.bitstream.size()));
+                        for (auto digit = record.crbegin(); digit != record.crend(); ++digit) {
+                            const int code = *digit <= '9' ? *digit - '0' : *digit - 'A' + 10;
+                            valid          = valid && code >= 0 && code < 16;
+                            if (!valid)
+                                break;
+                            for (int bit = 0; bit < 4; ++bit)
+                                original.bitstream.push_back((code >> bit) & 1);
+                        }
+                    }
+                    ++facet_idx;
+                }
+                REQUIRE(valid);
+                REQUIRE(size_t(facet_idx) == mesh.its.indices.size());
+                if (!original.bitstream.empty())
+                    original.update_used_states(0);
+                volume->mmu_segmentation_facets.set_data(std::move(original));
+            }
+            original_triangles += mesh.its.indices.size();
+            PaintingUpdateSelector selector(mesh);
+            auto                   stage = Clock::now();
+            selector.deserialize(volume->mmu_segmentation_facets.get_data(), false);
+            deserialize_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage).count();
+            leaf_triangles += selector.leaf_count();
+            // Exercise actual imported surface facets, including their existing color boundaries.
+            stage = Clock::now();
+            for (size_t sample = 0; sample < 32; ++sample) {
+                const size_t facet_idx = sample * mesh.its.indices.size() / 32;
+                const auto&  facet     = mesh.its.indices[facet_idx];
+                const Vec3f  a         = mesh.its.vertices[facet[0]];
+                const Vec3f  b         = mesh.its.vertices[facet[1]];
+                const Vec3f  c         = mesh.its.vertices[facet[2]];
+                const Vec3f  normal    = (b - a).cross(c - a);
+                if (normal.squaredNorm() == 0.f)
+                    continue;
+                const Vec3f hit    = (a + b + c) / 3.f;
+                const Vec3f camera = hit + normal.normalized() * 100.f;
+                auto        cursor = TriangleSelector::DoublePointCursor::cursor_factory(hit, hit + (b - a) * 0.1f, camera, 0.5f,
+                                                                                         TriangleSelector::CIRCLE, Transform3d::Identity(),
+                                                                                         TriangleSelector::ClippingPlane());
+                selector.select_patch(int(facet_idx), std::move(cursor), EnforcerBlockerType::Extruder3, Transform3d::Identity(), true);
+                ++brush_samples;
+            }
+            brush_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage).count();
+            stage            = Clock::now();
+            const auto saved = selector.serialize();
+            serialize_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage).count();
+            stage = Clock::now();
+            for (size_t facet = 0; facet < mesh.its.indices.size(); ++facet)
+                paint_characters += volume->mmu_segmentation_facets.get_triangle_as_string(int(facet)).size();
+            paint_export_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage).count();
+            CHECK_FALSE(saved.bitstream.empty());
+        }
+    }
+    REQUIRE(brush_samples > 0);
+    std::cout << "Imported project circle brush CPU benchmark (excludes raycast, OpenGL and ZIP compression):\n"
+              << "  Load project: " << std::chrono::duration<double, std::milli>(loaded - start).count() << " ms\n"
+              << "  Original triangles: " << original_triangles << ", painted leaves: " << leaf_triangles << "\n"
+              << "  Construct painted selectors: " << deserialize_ms << " ms\n"
+              << "  Circle brush average (r=0.5, " << brush_samples << " samples): " << brush_ms / brush_samples << " ms\n"
+              << "  Serialize selectors after painting: " << serialize_ms << " ms\n"
+              << "  Export imported paint records: " << paint_export_ms << " ms, " << paint_characters << " characters\n";
 }
 
 TEST_CASE("Dense mesh painting CPU benchmark", "[.][TriangleSelector][PaintingBenchmark]")

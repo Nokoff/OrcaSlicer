@@ -114,6 +114,15 @@ option(SLIC3R_MSVC_COMPILE_PARALLEL "Compile on Visual Studio in parallel" 1)
 set(SLIC3R_MSVC_ARCH "" CACHE STRING "MSVC /arch: instruction set (empty = compiler default)")
 set_property(CACHE SLIC3R_MSVC_ARCH PROPERTY STRINGS "" AVX2 AVX512)
 option(SLIC3R_MSVC_LTO "MSVC whole-program optimization (/GL + /LTCG) for Release" OFF)
+# Keep CPU-specific Windows launchers and their application DLLs distinguishable.
+set(SLIC3R_WINDOWS_BINARY_SUFFIX "")
+if (MSVC AND SLIC3R_MSVC_ARCH)
+    string(TOLOWER "${SLIC3R_MSVC_ARCH}" _slic3r_windows_arch)
+    set(SLIC3R_WINDOWS_BINARY_SUFFIX "-${_slic3r_windows_arch}")
+endif ()
+set(SLIC3R_WINDOWS_APP_BASENAME "snapmaker-orca${SLIC3R_WINDOWS_BINARY_SUFFIX}")
+set(SLIC3R_WINDOWS_EXE_NAME "${SLIC3R_WINDOWS_APP_BASENAME}.exe")
+set(SLIC3R_WINDOWS_DLL_BASENAME "Snapmaker_Orca${SLIC3R_WINDOWS_BINARY_SUFFIX}")
 option(SLIC3R_MSVC_PDB          "Generate PDB files on MSVC in Release mode" 1)
 option(SLIC3R_PERL_XS           "Compile XS Perl module and enable Perl unit and integration tests" 0)
 
@@ -994,7 +1003,7 @@ set (CPACK_PACKAGE_INSTALL_DIRECTORY ${CPACK_PACKAGE_NAME})
 set (CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/resources/images\\\\Snapmaker_Orca.ico")
 set (CPACK_NSIS_MUI_ICON "${CPACK_PACKAGE_ICON}")
 set (CPACK_NSIS_MUI_UNIICON "${CPACK_PACKAGE_ICON}")
-set (CPACK_NSIS_INSTALLED_ICON_NAME "snapmaker-orca.exe")
+set (CPACK_NSIS_INSTALLED_ICON_NAME "${SLIC3R_WINDOWS_EXE_NAME}")
 set(CPACK_NSIS_UNINSTALL_NAME "Uninstall")
 # Window caption. Keep install dir / Start Menu / registry without version.
 # CPack-generated .nsi stays ASCII. Chinese uninstall confirm is a UTF-8 BOM
@@ -1035,6 +1044,13 @@ set(CPACK_NSIS_DELETE_ICONS_EXTRA [=[
   Delete "$DESKTOP\Snapmaker Orca.lnk"
   SetShellVarContext all
 ]=])
+foreach (_snapmaker_exe_command CPACK_NSIS_EXTRA_INSTALL_COMMANDS CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS CPACK_NSIS_CREATE_ICONS_EXTRA)
+    string(REPLACE "snapmaker-orca.exe" "${SLIC3R_WINDOWS_EXE_NAME}"
+           ${_snapmaker_exe_command} "${${_snapmaker_exe_command}}")
+endforeach ()
+if (WIN32 AND SLIC3R_WINDOWS_BINARY_SUFFIX)
+    string(APPEND CPACK_PACKAGE_FILE_NAME "${SLIC3R_WINDOWS_BINARY_SUFFIX}")
+endif ()
 set (CPACK_PACKAGE_CHECKSUM SHA256)
 set (CPACK_PACKAGE_INSTALL_REGISTRY_KEY "Snapmaker_Orca")
 set (CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL OFF)
@@ -1229,6 +1245,7 @@ FunctionEnd
         message(FATAL_ERROR "Missing ${_snapmaker_preinstall_in} (required for CPack NSIS preinstall prompts).")
     endif()
     file(READ "${_snapmaker_preinstall_in}" _snapmaker_preinstall ENCODING UTF-8)
+    string(CONFIGURE "${_snapmaker_preinstall}" _snapmaker_preinstall @ONLY)
     file(WRITE "${_snapmaker_nsis_tpl_dir}/SnapmakerPreinstall.nsh"
          "${_snapmaker_utf8_bom}${_snapmaker_preinstall}")
     file(TO_NATIVE_PATH "${_snapmaker_nsis_tpl_dir}/SnapmakerPreinstall.nsh" _snapmaker_preinstall_nsh)

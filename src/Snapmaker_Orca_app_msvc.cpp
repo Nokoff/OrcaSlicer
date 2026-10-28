@@ -9,6 +9,10 @@
 #include <shlobj.h>
 #include "sentry_wrapper/SentryWrapper.hpp"
 
+#ifndef SLIC3R_WRAPPER_DLL_NAME
+#define SLIC3R_WRAPPER_DLL_NAME L"Snapmaker_Orca.dll"
+#endif
+
 #ifdef SLIC3R_GUI
 extern "C" {
 // Let the NVIDIA and AMD know we want to use their graphics card
@@ -288,7 +292,7 @@ int wmain(int argc, wchar_t** argv)
 
     wchar_t path_to_slic3r[MAX_PATH + 1] = {0};
     wcscpy(path_to_slic3r, path_to_exe);
-    wcscat(path_to_slic3r, L"Snapmaker_Orca.dll");
+    wcscat(path_to_slic3r, SLIC3R_WRAPPER_DLL_NAME);
     //	printf("Loading Slic3r library: %S\n", path_to_slic3r);
     HINSTANCE hInstance_Slic3r = LoadLibraryExW(path_to_slic3r, nullptr, 0);
     if (hInstance_Slic3r == nullptr) {
@@ -312,7 +316,7 @@ int wmain(int argc, wchar_t** argv)
 #endif
         );
     if (Snapmaker_Orca_main == nullptr) {
-        printf("could not locate the function Snapmaker_Orca_main in Snapmaker_Orca.dll\n");
+        printf("could not locate the function Snapmaker_Orca_main in %S\n", SLIC3R_WRAPPER_DLL_NAME);
         auto        soft_end_time = get_time_timestamp();
         std::string softEndTime   = BP_SOFT_WORKS_TIME + std::string(":") + get_works_time(soft_end_time - soft_start_time);
         sentryReportLog(SENTRY_LOG_TRACE, softEndTime, BP_START_SOFT);

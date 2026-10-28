@@ -17,7 +17,7 @@
 !endif
 
 SnapmakerOrcaPre_check_loop:
-  nsExec::Exec 'cmd.exe /c tasklist /FI "IMAGENAME eq snapmaker-orca.exe" 2>nul | find /i "snapmaker-orca.exe" >nul'
+  nsExec::Exec 'cmd.exe /c tasklist /FI "IMAGENAME eq @SLIC3R_WINDOWS_EXE_NAME@" 2>nul | find /i "@SLIC3R_WINDOWS_EXE_NAME@" >nul'
   Pop $0
   IntCmp $0 0 SnapmakerOrcaPre_in_use SnapmakerOrcaPre_try_legacy SnapmakerOrcaPre_try_legacy
 SnapmakerOrcaPre_try_legacy:
@@ -55,7 +55,7 @@ SnapmakerOrcaPre_try_instdir:
   StrCpy $0 "$INSTDIR\Uninstall.exe"
   Goto SnapmakerOrcaPre_have_uninst_str
 SnapmakerOrcaPre_check_app:
-  IfFileExists "$INSTDIR\snapmaker-orca.exe" SnapmakerOrcaPre_have_existing_install SnapmakerOrcaPre_check_legacy_app
+  IfFileExists "$INSTDIR\@SLIC3R_WINDOWS_EXE_NAME@" SnapmakerOrcaPre_have_existing_install SnapmakerOrcaPre_check_legacy_app
 SnapmakerOrcaPre_check_legacy_app:
   IfFileExists "$INSTDIR\Snapmaker_Orca.exe" SnapmakerOrcaPre_have_existing_install SnapmakerOrcaPre_finish
 
