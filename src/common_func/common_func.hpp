@@ -11,7 +11,7 @@
 #ifndef GIT_COMMIT_HASH
 #define GIT_COMMIT_HASH "0000000" // 0000000 means uninitialized
 #endif
-#define SLIC3R_BUILD_ID "2.4.0"
+#define SLIC3R_BUILD_ID "2.4.1"
 // #define SLIC3R_RC_VERSION "01.10.01.50"
 #define BBL_RELEASE_TO_PUBLIC 1
 #define BBL_INTERNAL_TESTING 0
@@ -21,7 +21,6 @@ namespace common
 {
 	std::string get_pc_name();
 
-	std::string get_flutter_version();
 
 	std::string get_profile_version();
 

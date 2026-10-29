@@ -11,6 +11,7 @@ add_executable(${_TEST_NAME}_tests
 	test_custom_gcode.cpp
 	test_cut_colors.cpp
 	test_elephant_foot_compensation.cpp
+	test_extrusion_entity.cpp
 	test_geometry.cpp
 	test_gltf.cpp
 	test_icns.cpp

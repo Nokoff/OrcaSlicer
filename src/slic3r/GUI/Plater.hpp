@@ -75,6 +75,7 @@ class ObjectSettings;
 class ObjectLayers;
 class ObjectList;
 class GLCanvas3D;
+class GLTexture;
 class Mouse3DController;
 class NotificationManager;
 class DailyTipsWindow;
@@ -258,6 +259,14 @@ public:
     const std::vector<std::string>& get_bed_type_combo_enum_values() const { return m_bed_type_combo_enum_values; }
 
 private:
+    void continue_sync_filament_dialog(bool got_machine_info, const std::string& machine_type);
+
+    // Applies a nozzle sync query result on the UI thread (async sync-button path).
+    void apply_nozzle_sync_result(bool got_machine_info, std::string machine_type,
+                                  std::vector<std::string> nozzle_diameters,
+                                  std::vector<std::string> nozzle_volume_types,
+                                  std::string device_name);
+
     struct priv;
     std::unique_ptr<priv> p;
 
@@ -374,6 +383,8 @@ public:
     void load_gcode();
     void load_gcode(const wxString& filename);
     void reload_gcode_from_disk();
+    // rebuild the gcode preview with the current pipeline preference
+    void reload_gcode_preview();
     void refresh_print();
 
     void update_nozzle_settings();
@@ -812,7 +823,7 @@ public:
     void enable_view_toolbar(bool enable);
 #endif
 
-    bool init_collapse_toolbar();
+    bool init_collapse_toolbar(const GLTexture* shared_background_texture = nullptr);
 
     const Camera& get_camera() const;
     Camera& get_camera();

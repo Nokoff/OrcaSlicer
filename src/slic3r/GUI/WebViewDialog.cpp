@@ -84,11 +84,30 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
     wxBoxSizer* panel_sizer = new wxBoxSizer(wxVERTICAL);
     panel->SetSizer(panel_sizer);
 #endif //BBL_RELEASE_TO_PUBLIC
+    // Keep the local library accessible alongside the gateway-owned home page.
+    auto* library_navigation = new wxBoxSizer(wxHORIZONTAL);
+    auto* home_button = new wxButton(this, wxID_ANY, _L("Home"));
+    auto* files_button = new wxButton(this, wxID_ANY, _L("My Files"));
+    library_navigation->Add(home_button, 0, wxALL, 5);
+    library_navigation->Add(files_button, 0, wxALL, 5);
+    topsizer->Add(library_navigation, 0, wxEXPAND);
+    home_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        wxString url = make_home_url();
+        load_url(url);
+    });
+    files_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        wxString url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
+                                              "/web/myfiles/index.html");
+        url += "?lang=" + wxGetApp().current_language_code_safe();
+        load_url(url);
+    });
+
     // Create the info panel
     m_info = new wxInfoBar(this);
     topsizer->Add(m_info, wxSizerFlags().Expand());
 
     // Create the webview
+    BOOST_LOG_TRIVIAL(warning) << "[FLUTTER_FLOW] [webview] [navigation_requested] view=home url=" << url.ToUTF8().data();
     m_browser = WebView::CreateWebView(this, url);
 
     wxGetApp().fltviews().add_webview_panel(this, url);
@@ -254,8 +273,9 @@ void WebViewPanel::reload() {
 
 void WebViewPanel::load_url(wxString& url)
 {
+    BOOST_LOG_TRIVIAL(warning) << "[FLUTTER_FLOW] [webview] [navigation_requested] view=home url=" << url.ToUTF8().data();
 
-    m_browser->LoadURL(url);
+    WebView::LoadUrl(m_browser, url);
 
     wxGetApp().fltviews().add_webview_panel(this, url);
 
@@ -429,9 +449,6 @@ void WebViewPanel::OnClose(wxCloseEvent& evt)
 
 void WebViewPanel::OnFreshLoginStatus(wxTimerEvent &event)
 {
-    /*auto mainframe = Slic3r::GUI::wxGetApp().mainframe;
-    if (mainframe && mainframe->m_webview == this)
-        Slic3r::GUI::wxGetApp().sm_get_login_info();*/
 }
 
 void WebViewPanel::SetLoginPanelVisibility(bool bshow)
@@ -476,9 +493,7 @@ void WebViewPanel::SendMyFilesList(int images)
 
 wxString WebViewPanel::make_home_url() const
 {
-    wxString url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
-                                      "/web/flutter_web/index.html?path=0");
-    return wxGetApp().get_international_url(url);
+    return wxGetApp().gateway_web_url("home_page");
 }
 
 void WebViewPanel::SendDesignStaffpick(bool on)
@@ -650,6 +665,7 @@ void WebViewPanel::OnDocumentLoaded(wxWebViewEvent& evt)
     // Only notify if the document is the main frame, not a subframe
     if (evt.GetURL() == m_browser->GetCurrentURL())
     {
+        BOOST_LOG_TRIVIAL(warning) << "[FLUTTER_FLOW] [webview] [navigation_loaded] view=home url=" << evt.GetURL().ToUTF8().data();
         if (wxGetApp().get_mode() == comDevelop)
             wxLogMessage("%s", "Document loaded; url='" + evt.GetURL() + "'");
     }
@@ -692,7 +708,6 @@ void WebViewPanel::OnScriptMessage(wxWebViewEvent& evt)
     // update login status
     if (m_LoginUpdateTimer == nullptr) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " Create Timer";
-        wxGetApp().on_flutter_wcp_received();
         m_LoginUpdateTimer = new wxTimer(this, LOGIN_INFO_UPDATE_TIMER_ID);
         m_LoginUpdateTimer->Start(2000);
     }
