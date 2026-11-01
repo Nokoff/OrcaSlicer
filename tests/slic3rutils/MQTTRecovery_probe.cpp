@@ -25,7 +25,7 @@ int main(int argc, char** argv)
     try {
         std::atomic<int> responses{0};
         std::atomic<int> failures{0};
-        auto             client = std::make_shared<MqttClient>(std::string("tcp://127.0.0.1:") + argv[1], "recovery-test", "", "", true);
+        auto             client = MqttClient::create(std::string("tcp://127.0.0.1:") + argv[1], "recovery-test", "", "", true);
         client->SetMessageCallback([&responses](const std::string& topic, const std::string& payload) {
             if (topic == "test/response" && payload == "alive")
                 ++responses;

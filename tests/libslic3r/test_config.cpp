@@ -300,8 +300,8 @@ SCENARIO("Out of range values coming from a foreign 3mf are repaired on import."
         REQUIRE(config.validate().empty());
 
         WHEN("It carries the values a MakerWorld 3mf is known to store") {
-            // These are exactly the keys and values reported by the "Invalid values found in the 3mf" notification.
-            config.set("raft_first_layer_expansion", -1.0);
+            // Exercise foreign values outside the current ranges, including below the -1 raft auto sentinel.
+            config.set("raft_first_layer_expansion", -2.0);
             config.set("solid_infill_filament", 0);
             config.set("sparse_infill_filament", 0);
             config.set("tree_support_wall_count", -1);
@@ -324,7 +324,8 @@ SCENARIO("Out of range values coming from a foreign 3mf are repaired on import."
                 REQUIRE(config.opt_int("wall_filament") == 1);
                 // 0 support wall loops means auto, which is what -1 means in the source slicer.
                 REQUIRE(config.opt_int("tree_support_wall_count") == 0);
-                REQUIRE_THAT(config.opt_float("raft_first_layer_expansion"), Catch::Matchers::WithinAbs(0.0, 1e-9));
+                // -1 is the supported automatic-expansion sentinel.
+                REQUIRE_THAT(config.opt_float("raft_first_layer_expansion"), Catch::Matchers::WithinAbs(-1.0, 1e-9));
             }
             THEN("The repaired config passes validation, so no error is raised to the user") {
                 REQUIRE(config.validate().empty());

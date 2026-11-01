@@ -653,7 +653,10 @@ private:
             version  = std::string("V") + Snapmaker_VERSION;
             // Marks this build as our fork rather than upstream Snapmaker Orca.
             forkText = "Nokoff version";
-            betaText = _L("Beta version");
+            const auto release_version = Semver::parse(Snapmaker_VERSION);
+            const char* prerelease = release_version ? release_version->prerelease() : nullptr;
+            betaText = prerelease != nullptr && std::string(prerelease).find("beta") != std::string::npos ?
+                           _L("Beta version") : wxString();
 
             titleFont   = Label::sysFont(20, false);
             versionFont = Label::Body_13;
