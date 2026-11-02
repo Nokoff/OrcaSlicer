@@ -253,6 +253,8 @@ private:
     wxRect get_dropdown_rect() const;
 
     void SelectLegacyFilamentColor();
+    void ShowFilamentColorMenu();
+    void SelectSpoolmanSpool();
     void ApplyFilamentColor(const FilamentColor& colorData);
     std::string CurrentFilamentPresetName() const;
     std::string CurrentFilamentId() const;

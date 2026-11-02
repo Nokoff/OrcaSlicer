@@ -83,6 +83,18 @@ endif()
 
 catch_discover_tests(${_TEST_NAME}_tests TEST_PREFIX "${_TEST_NAME}: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})
 catch_discover_tests(gateway_tests TEST_PREFIX "gateway: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})
+
+add_executable(spoolman_tests
+    Spoolman_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/slic3r/Utils/Spoolman.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/slic3r/Utils/Http.cpp
+    )
+target_link_libraries(spoolman_tests test_common libslic3r boost_libs libcurl OpenSSL::SSL OpenSSL::Crypto)
+if (MSVC)
+    target_compile_definitions(spoolman_tests PRIVATE _WIN32_WINNT=0x0601 NOMINMAX)
+endif ()
+set_property(TARGET spoolman_tests PROPERTY FOLDER "tests")
+catch_discover_tests(spoolman_tests TEST_PREFIX "spoolman: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})
 # add_test(${_TEST_NAME}_tests ${_TEST_NAME}_tests "${CATCH_EXTRA_ARGS} exclude:[NotWorking]")
 
 set(_FILAMENT_TEST_NAME filament_dropdown_mapping)

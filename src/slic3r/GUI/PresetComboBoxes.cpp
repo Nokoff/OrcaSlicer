@@ -34,6 +34,7 @@
 #include "FilamentColorUtils.hpp"
 #include "NotificationManager.hpp"
 #include "FilamentColorDialog.hpp"
+#include "SpoolmanSpoolDialog.hpp"
 #include "GLCanvas3D.hpp"
 #include "Plater.hpp"
 #include "MainFrame.hpp"
@@ -881,7 +882,11 @@ PlaterPresetComboBox::PlaterPresetComboBox(wxWindow *parent, Preset::Type preset
         clr_picker->SetBitmapMargins(0, 0);
         clr_picker->SetToolTip(_L("Click to select filament color. Right-click to highlight its use on the model."));
         clr_picker->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-            ChangeExtruderColor();
+            // With a Spoolman server configured, offer picking a spool next to the plain colour chooser.
+            if (wxGetApp().app_config != nullptr && !wxGetApp().app_config->get(Spoolman::ConfigKey).empty())
+                ShowFilamentColorMenu();
+            else
+                ChangeExtruderColor();
         });
         clr_picker->Bind(wxEVT_RIGHT_DOWN, [this](wxMouseEvent&) {
             if (m_filament_idx >= 0) {
@@ -1109,6 +1114,44 @@ void PlaterPresetComboBox::SelectLegacyFilamentColor()
 
     const std::string selected_color = m_clrData.GetColour().GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
     ApplyFilamentColor(FilamentColor::FromMultiColors("", FilamentColorMode::Segment, selected_color));
+}
+
+void PlaterPresetComboBox::ShowFilamentColorMenu()
+{
+    wxMenu menu;
+    append_menu_item(&menu, wxID_ANY, _L("Choose color..."), "",
+        [this](wxCommandEvent&) { CallAfter([this]() { ChangeExtruderColor(); }); }, "", &menu);
+    append_menu_item(&menu, wxID_ANY, _L("Select spool from Spoolman..."), "",
+        [this](wxCommandEvent&) { CallAfter([this]() { SelectSpoolmanSpool(); }); }, "", &menu);
+    clr_picker->PopupMenu(&menu, 0, clr_picker->GetSize().y);
+}
+
+void PlaterPresetComboBox::SelectSpoolmanSpool()
+{
+    if (m_filament_idx < 0 || wxGetApp().preset_bundle == nullptr)
+        return;
+
+    SpoolmanSpoolDialog dialog(this, m_filament_idx);
+    if (dialog.ShowModal() != wxID_OK)
+        return;
+
+    const SpoolmanSpool& spool = dialog.Selection();
+    const FilamentColorMode mode = spool.longitudinal ? FilamentColorMode::Gradient : FilamentColorMode::Segment;
+    ApplyFilamentColor(FilamentColor::FromColors(spool.colors, mode));
+
+    // The spool only sets the colour; warn when the selected preset is for a different material.
+    const Preset* preset = m_collection != nullptr ? m_collection->find_preset(CurrentFilamentPresetName(), false, true) : nullptr;
+    if (preset == nullptr || spool.material.empty() || !preset->config.has("filament_type"))
+        return;
+
+    const std::string presetMaterial = preset->config.opt_string("filament_type", 0u);
+    if (!presetMaterial.empty() && !boost::algorithm::iequals(presetMaterial, spool.material))
+    {
+        const std::string message = format(_u8L("Spool \"%1%\" is %2%, but filament %3% uses a %4% preset."),
+                                           spool.DisplayName(), spool.material, m_filament_idx + 1, presetMaterial);
+        wxGetApp().plater()->get_notification_manager()->push_notification(NotificationType::CustomNotification,
+            NotificationManager::NotificationLevel::WarningNotificationLevel, message);
+    }
 }
 
 void PlaterPresetComboBox::ApplyFilamentColor(const FilamentColor& colorData)

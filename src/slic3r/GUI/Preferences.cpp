@@ -4,6 +4,7 @@
 #include "MainFrame.hpp"
 #include "Plater.hpp"
 #include "MsgDialog.hpp"
+#include "slic3r/Utils/Spoolman.hpp"
 #include "I18N.hpp"
 #include "libslic3r/AppConfig.hpp"
 #include <wx/language.h>
@@ -453,7 +454,7 @@ wxBoxSizer *PreferencesDialog::create_item_multiple_combobox(
     return m_sizer_tcombox;
 }
 
-wxBoxSizer *PreferencesDialog::create_item_input(wxString title, wxString title2, wxWindow *parent, wxString tooltip, std::string param, std::function<void(wxString)> onchange)
+wxBoxSizer *PreferencesDialog::create_item_input(wxString title, wxString title2, wxWindow *parent, wxString tooltip, std::string param, std::function<void(wxString)> onchange, bool digits_only)
 {
     wxBoxSizer *sizer_input = new wxBoxSizer(wxHORIZONTAL);
     auto        input_title   = new wxStaticText(parent, wxID_ANY, title);
@@ -466,8 +467,10 @@ wxBoxSizer *PreferencesDialog::create_item_input(wxString title, wxString title2
     StateColor input_bg(std::pair<wxColour, int>(wxColour("#F0F0F1"), StateColor::Disabled), std::pair<wxColour, int>(*wxWHITE, StateColor::Enabled));
     input->SetBackgroundColor(input_bg);
     input->GetTextCtrl()->SetValue(app_config->get(param));
-    wxTextValidator validator(wxFILTER_DIGITS);
-    input->GetTextCtrl()->SetValidator(validator);
+    if (digits_only) {
+        wxTextValidator validator(wxFILTER_DIGITS);
+        input->GetTextCtrl()->SetValidator(validator);
+    }
 
     auto second_title = new wxStaticText(parent, wxID_ANY, title2, wxDefaultPosition, DESIGN_TITLE_SIZE, 0);
     second_title->SetForegroundColour(DESIGN_GRAY900_COLOR);
@@ -1316,6 +1319,13 @@ wxWindow* PreferencesDialog::create_general_page()
     auto item_backup  = create_item_checkbox(_L("Auto-Backup"), page,_L("Backup your project periodically for restoring from the occasional crash."), 50, "backup_switch");
     auto item_backup_interval = create_item_backup_input(_L("every"), page, _L("The period of backup in seconds."), "backup_interval");
 
+    auto title_spoolman = create_item_title(_L("Spoolman"), page, _L("Spoolman"));
+    auto item_spoolman_url = create_item_input(_L("Server address"), "", page,
+        _L("Address of your Spoolman server, e.g. http://192.168.1.10:7912. When set, clicking a filament color in the sidebar lets you pick a spool from Spoolman."),
+        Spoolman::ConfigKey, [this](wxString value) {
+            app_config->set(Spoolman::ConfigKey, Spoolman::NormalizeUrl(into_u8(value)));
+        }, false);
+
     //downloads
     auto title_downloads = create_item_title(_L("Downloads"), page, _L("Downloads"));
     auto item_downloads = create_item_downloads(page,50,"download_path");
@@ -1411,6 +1421,9 @@ wxWindow* PreferencesDialog::create_general_page()
     sizer_page->Add(item_gcodes_warning, 0, wxTOP, FromDIP(3));
     sizer_page->Add(item_backup, 0, wxTOP,FromDIP(3));
     item_backup->Add(item_backup_interval, 0, wxLEFT, 0);
+
+    sizer_page->Add(title_spoolman, 0, wxTOP | wxEXPAND, FromDIP(20));
+    sizer_page->Add(item_spoolman_url, 0, wxTOP, FromDIP(3));
 
     sizer_page->Add(title_downloads, 0, wxTOP| wxEXPAND, FromDIP(20));
     sizer_page->Add(item_downloads, 0, wxEXPAND, FromDIP(3));

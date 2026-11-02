@@ -378,6 +378,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/ObjColorDialog.hpp
     GUI/FilamentColorDialog.cpp
     GUI/FilamentColorDialog.hpp
+    GUI/SpoolmanSpoolDialog.cpp
+    GUI/SpoolmanSpoolDialog.hpp
     GUI/ObjectDataViewModel.cpp
     GUI/ObjectDataViewModel.hpp
     GUI/OG_CustomCtrl.cpp
@@ -675,6 +677,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/OctoPrint.hpp
     Utils/PresetUpdater.cpp
     Utils/PresetUpdater.hpp
+    Utils/Spoolman.cpp
+    Utils/Spoolman.hpp
     Utils/PrintHost.cpp
     Utils/PrintHost.hpp
     Utils/Process.cpp
