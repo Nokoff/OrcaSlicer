@@ -1,2 +1,8 @@
 # Set the default behavior, in case people don't have core.autocrlf set.
 * text=auto
+
+# These local generated assets are addressed/verified by their exact byte hash.
+resources/web/flutter_web/main.a99ebb0b6b5a6e09.js -text -diff -whitespace
+resources/web/flutter_web/flutter_bootstrap.b5e1ccd72ada25c0.js -text -diff -whitespace
+resources/web/flutter_web/index.html -text whitespace=cr-at-eol
+resources/web/flutter_web/index.before-colour-match.html -text whitespace=cr-at-eol

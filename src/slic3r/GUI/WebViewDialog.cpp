@@ -594,7 +594,11 @@ int WebViewPanel::get_model_mall_detail_url(std::string *url, std::string id)
 
 void WebViewPanel::update_mode()
 {
-    GetSizer()->Show(size_t(0), wxGetApp().app_config->get("internal_developer_mode") == "true");
+#if !BBL_RELEASE_TO_PUBLIC
+    // Public builds have no developer toolbar; their first row is Home/My Files.
+    // Address the toolbar explicitly so mode changes never hide library navigation.
+    GetSizer()->Show(bSizer_toolbar, wxGetApp().app_config->get("internal_developer_mode") == "true");
+#endif
     GetSizer()->Layout();
 }
 

@@ -17,6 +17,8 @@ Platform helpers such as `build_linux.sh`, `build_release_macos.sh`, and `build_
 Unit tests rely on Catch2 (`tests/catch2/`). Name specs after the component under test—for example `tests/libslic3r/TestPlanarHole.cpp`—and tag long-running cases so `ctest -L fast` remains useful. Cover new algorithms with deterministic fixtures or sample G-code stored in `tests/data/`. Document manual printer validation or regression slicer checks in your PR when automated coverage is insufficient.
 
 ## Commit & Pull Request Guidelines
+After committing a change, ask the user whether to rebuild and update the Windows installer so their installed copy stays current. If the user has already requested an installer update in the current task, complete that update without asking again. Clearly distinguish committing source, building an installer, and updating the installed application.
+
 The history favors concise, sentence-style subject lines with optional issue references, e.g., `Fix grid lines origin for multiple plates (#10724)`. Squash fixups locally before opening a PR. Complete `.github/pull_request_template.md`, include reproduction steps or screenshots for UI changes, and mention impacted presets or translations. Link issues via `Closes #NNNN` when applicable, and call out dependency bumps or profile migrations for maintainer review.
 
 ## Security & Configuration Tips

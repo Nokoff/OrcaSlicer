@@ -203,6 +203,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--platform", required=True, choices=sorted(STAGE_PLATFORMS), help="target staging platform")
     parser.add_argument("--resources-dir", default="resources", help="Orca resources directory")
     parser.add_argument("--cache-dir", type=Path, help="archive cache directory")
+    parser.add_argument("--colour-match-fix", action="store_true", help="apply the version-checked local hue-preserving matcher")
     return parser.parse_args()
 
 
@@ -238,6 +239,11 @@ def main() -> int:
         web_fingerprints = [web_fingerprint(web_source) for web_source in web_sources]
         if any(fingerprint != web_fingerprints[0] for fingerprint in web_fingerprints[1:]):
             raise RuntimeError(f"flutter_web contents differ between archives for {args.platform}")
+
+        if args.colour_match_fix:
+            from patch_connect_colour_match import patch_web
+
+            patch_web(web_sources[0])
 
         remove_stale_cli_files(resources_dir, asset_keys)
         replace_directory(web_sources[0], resources_dir / "web" / "flutter_web", resources_dir)

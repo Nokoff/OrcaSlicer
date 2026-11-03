@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "original_main": "main.b347974c91352c2f.js",
+  "original_sha256": "a6f69b16f1c3d69e25b3fb1d86a2e326e9c4945d9365f9b19dd5ec2133780353",
+  "index_backup": "index.before-colour-match.html",
+  "patched_hashes": {
+    "main.a99ebb0b6b5a6e09.js": "a99ebb0b6b5a6e09fa469170d34afb382d85d610b1cb6585c50254e391e157ef",
+    "flutter_bootstrap.b5e1ccd72ada25c0.js": "b5e1ccd72ada25c0295d0d510a141748a415dc8f44097a143a3919c8ac4760b9",
+    "index.html": "e9914991ccb6c5026fa1216a833cd40b5ad19e6c0d306a771ce8d0d078d44b8f"
+  }
+}
