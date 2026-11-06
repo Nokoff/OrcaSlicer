@@ -61,3 +61,11 @@ Packaging and rollback details for the colour change are in
 `docs/local-colour-matching-fix.md`. The installer uses a clean payload, verifies
 the pinned connection archive, applies the reviewed patch, and checks that My Files
 assets and the architecture-specific launcher/DLL are present.
+
+## Completed validation and installation
+
+Verified 6 November 2026: the consolidated installer completed with exit code 0. The installed launcher, application DLL, My Files page, active Flutter entrypoint and build metadata match the tested payload byte for byte. The Start Menu entry Snapmaker Orca (AVX-512) targets the updated installed launcher.
+
+All 660 native regression cases passed across the full run (659 cases) and the corrected packaged-resource check rerun (1 case). The resource check accepts ORCA_TEST_FLUTTER_BUNDLE to validate the actual content-hashed shipping bundle. Eight Python packaging tests, colour-matching regression tests, installer archive integrity, checksum verification and the packaged launcher --help smoke test also passed.
+
+Installed application source revision: 3b55d2cd6673790c8d675519eb41d28e5b521cad, including Spoolman commit 2106f220e7. The subsequent validation-only commit changes a test and this report; application binaries are identical. No live printer job or full interactive UI walkthrough was performed. Open Home, then My Files, in the installed app.
