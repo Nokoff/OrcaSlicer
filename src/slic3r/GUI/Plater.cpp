@@ -22427,6 +22427,14 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn, bool us
             return;
         }
         default_output_file = prepare_upload_filename_for_dialog(std::move(default_output_file));
+        if (!use_3mf) {
+            fs::path project_path = into_path(get_project_filename(".3mf"));
+            if (project_path.empty() && get_project_name() != _L("Untitled"))
+                project_path = into_path(get_project_name() + ".3mf");
+            if (!project_path.empty())
+                default_output_file = prepare_upload_filename_for_dialog(
+                    this->p->background_process.output_filepath_for_project(project_path));
+        }
 
         // get file path
         auto file_path = get_partplate_list().get_curr_plate()->get_tmp_gcode_path();
