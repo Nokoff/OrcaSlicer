@@ -503,7 +503,9 @@ public:
                                                 const indexed_triangle_set&                                               target_its,
                                                 const Transform3d&                                                        target_transform,
                                                 const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting,
-                                                const Transform3d& source_transform = Transform3d::Identity());
+                                                const Transform3d& source_transform = Transform3d::Identity(),
+                                                const std::vector<uint8_t>* target_face_filter = nullptr,
+                                                const std::vector<size_t>* target_face_source_faces = nullptr);
 
     // Orca: Restrict painting to triangles that currently hold one of the given states, so that a
     // single filament can be recolored inside an area without disturbing the other filaments there.

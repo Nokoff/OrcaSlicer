@@ -18,14 +18,21 @@ ENABLE_ENUM_BITMASK_OPERATORS(ModelObjectCutAttribute);
 
 class Cut {
 
+    struct SavedVolumePainting
+    {
+        ObjectID source_volume_id;
+        std::optional<TriangleSelector::SavedPainting> painting;
+    };
+
     Model                       m_model;
     int                         m_instance;
     const Transform3d           m_cut_matrix;
     ModelObjectCutAttributes    m_attributes;
+    int                         m_new_face_filament{ 0 };
 
     void post_process(ModelObject* object, ModelObjectPtrs& objects, bool keep, bool place_on_cut, bool flip);
     void post_process(ModelObject* upper_object, ModelObject* lower_object, ModelObjectPtrs& objects);
-    void finalize(const ModelObjectPtrs& objects, const std::vector<std::optional<TriangleSelector::SavedPainting>>& saved_paintings);
+    void finalize(const ModelObjectPtrs& objects, const std::vector<SavedVolumePainting>& saved_paintings);
 
 public:
 
@@ -34,6 +41,8 @@ public:
                                               ModelObjectCutAttribute::KeepLower |
                                               ModelObjectCutAttribute::KeepAsParts );
     ~Cut() { m_model.clear_objects(); }
+
+    void set_new_face_filament(int filament) { m_new_face_filament = filament > 0 ? filament : 0; }
 
     struct Groove
     {

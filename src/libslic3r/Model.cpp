@@ -2191,7 +2191,9 @@ std::optional<TriangleSelector::SavedPainting> ModelVolume::save_painting() cons
     return painting;
 }
 
-void ModelVolume::restore_painting(const std::optional<TriangleSelector::SavedPainting>& saved, bool keep_existing_paint)
+void ModelVolume::restore_painting(const std::optional<TriangleSelector::SavedPainting>& saved, bool keep_existing_paint,
+                                   const std::vector<uint8_t>* target_face_filter,
+                                   const std::vector<size_t>* target_face_source_faces)
 {
     if (!keep_existing_paint)
         reset_extra_facets();
@@ -2206,7 +2208,8 @@ void ModelVolume::restore_painting(const std::optional<TriangleSelector::SavedPa
             keep_existing_paint ? std::optional<std::reference_wrapper<const TriangleSelector::TriangleSplittingData>>(std::cref(target.get_data())) :
                                   std::nullopt;
         auto remapped = TriangleSelector::remap_painting(saved->mesh.its, source, mesh().its,
-                                                         Geometry::translation_transform(mesh().get_init_shift()), existing, saved->transform);
+                                                         Geometry::translation_transform(mesh().get_init_shift()), existing, saved->transform,
+                                                         target_face_filter, target_face_source_faces);
         if (!remapped.bitstream.empty())
             target.set_data(std::move(remapped));
     };

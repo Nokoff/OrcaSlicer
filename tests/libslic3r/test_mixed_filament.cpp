@@ -8,6 +8,9 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/GCode/ToolOrdering.hpp"
 #include "libslic3r/Layer.hpp"
+#include "libslic3r/CutUtils.hpp"
+#include "libslic3r/MeshBoolean.hpp"
+#include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/TriangleSelector.hpp"
 
@@ -875,6 +878,122 @@ TEST_CASE("Mixed filament component edits rebuild painted region targets", "[Mix
     print.apply(model, config);
     const std::vector<unsigned int> expected_updated_second_component_extruders {3, 4, mixed_virtual_id};
     CHECK(first_layer_range_painted_extruders(print) == expected_updated_second_component_extruders);
+}
+
+TEST_CASE("Plane cut cap filament reaches sliced painted regions", "[Cut][MixedFilament][Slicing]")
+{
+    Model source;
+    ModelObject* source_object = source.add_object();
+    source_object->add_instance();
+    ModelVolume* source_volume = source_object->add_volume(make_cube(20., 20., 20.));
+    source_volume->config.set("extruder", 1);
+    source_object->ensure_on_bed();
+
+    constexpr unsigned int exterior_filament = 1;
+    constexpr unsigned int cap_filament = 2;
+    TriangleSelector source_selector(source_volume->mesh());
+    for (size_t face = 0; face < source_volume->mesh().its.indices.size(); ++face)
+        source_selector.set_facet(static_cast<int>(face), EnforcerBlockerType(exterior_filament));
+    REQUIRE(source_volume->mmu_segmentation_facets.set(source_selector));
+
+    Cut cut(source_object, 0, Geometry::translation_transform(Vec3d(0., 0., 10.)),
+            ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepPaint);
+    cut.set_new_face_filament(cap_filament);
+    const ModelObjectPtrs& cut_results = cut.perform_with_plane();
+    REQUIRE(cut_results.size() == 2);
+
+    Model edited;
+    edited.add_object(*cut_results.front());
+    edited.objects.front()->ensure_on_bed();
+    DynamicPrintConfig config = mixed_region_print_config("");
+    config.set("enable_prime_tower", false);
+    config.option<ConfigOptionFloats>("nozzle_diameter")->values = {0.4, 0.4, 0.4, 0.4};
+    config.set("layer_height", 0.2);
+    config.set("line_width", 0.45);
+    config.set("outer_wall_line_width", 0.45);
+    config.set("inner_wall_line_width", 0.45);
+    config.set("sparse_infill_line_width", 0.45);
+    config.set("internal_solid_infill_line_width", 0.45);
+    config.set("top_surface_line_width", 0.45);
+    config.set("initial_layer_line_width", 0.45);
+    Print print;
+    print.set_status_silent();
+    print.apply(edited, config);
+    config = print.full_print_config();
+    print.process();
+    REQUIRE(print.objects().size() == 1);
+    const PrintObjectRegions* regions = first_print_object_regions(print);
+    REQUIRE(regions != nullptr);
+    REQUIRE_FALSE(regions->layer_ranges.empty());
+
+    std::set<unsigned int> sliced_filaments;
+    for (const PrintObjectRegions::LayerRangeRegions& range : regions->layer_ranges)
+        for (const PrintObjectRegions::PaintedRegion& painted : range.painted_regions)
+            sliced_filaments.insert(painted.extruder_id);
+    CHECK(sliced_filaments.find(exterior_filament) != sliced_filaments.end());
+    CHECK(sliced_filaments.find(cap_filament) != sliced_filaments.end());
+
+}
+
+TEST_CASE("Boolean cavity filament reaches sliced painted regions", "[MeshBoolean][MixedFilament][Slicing]")
+{
+    TriangleMesh target = make_cube(20., 20., 20.);
+    TriangleMesh cutter = make_cube(8., 8., 8.);
+    TriangleSelector source_selector(target);
+    constexpr unsigned int exterior_filament = 1;
+    constexpr unsigned int cavity_filament = 2;
+    for (size_t face = 0; face < target.its.indices.size(); ++face)
+        source_selector.set_facet(static_cast<int>(face), EnforcerBlockerType(exterior_filament));
+    const auto source_painting = source_selector.serialize();
+
+    MeshBoolean::mcut::BooleanResult result;
+    REQUIRE(MeshBoolean::mcut::make_boolean(target, cutter, result, "A_NOT_B"));
+    REQUIRE_FALSE(result.mesh.empty());
+    REQUIRE(result.source_faces.size() == result.mesh.its.indices.size());
+    const auto remapped = TriangleSelector::remap_painting(target.its, source_painting, result.mesh.its,
+                                                            Transform3d::Identity(), std::nullopt, Transform3d::Identity(),
+                                                            &result.source_faces, &result.source_face_ids);
+    TriangleSelector output_selector(result.mesh);
+    output_selector.deserialize(remapped, false);
+    for (size_t face = 0; face < result.source_faces.size(); ++face)
+        if (!result.source_faces[face])
+            output_selector.set_facet(static_cast<int>(face), EnforcerBlockerType(cavity_filament));
+
+    Model model;
+    ModelObject* object = model.add_object();
+    object->add_instance();
+    ModelVolume* volume = object->add_volume(TriangleMesh(result.mesh.its));
+    volume->config.set("extruder", int(exterior_filament));
+    REQUIRE(volume->mmu_segmentation_facets.set(output_selector));
+    object->ensure_on_bed();
+
+    DynamicPrintConfig config = mixed_region_print_config("");
+    config.set("enable_prime_tower", false);
+    config.option<ConfigOptionFloats>("nozzle_diameter")->values = {0.4, 0.4, 0.4, 0.4};
+    config.set("layer_height", 0.2);
+    config.set("line_width", 0.45);
+    config.set("outer_wall_line_width", 0.45);
+    config.set("inner_wall_line_width", 0.45);
+    config.set("sparse_infill_line_width", 0.45);
+    config.set("internal_solid_infill_line_width", 0.45);
+    config.set("top_surface_line_width", 0.45);
+    config.set("initial_layer_line_width", 0.45);
+    Print print;
+    print.set_status_silent();
+    print.apply(model, config);
+    config = print.full_print_config();
+    print.process();
+
+    REQUIRE(print.objects().size() == 1);
+    const PrintObjectRegions* regions = first_print_object_regions(print);
+    REQUIRE(regions != nullptr);
+    REQUIRE_FALSE(regions->layer_ranges.empty());
+    std::set<unsigned int> sliced_filaments;
+    for (const PrintObjectRegions::LayerRangeRegions& range : regions->layer_ranges)
+        for (const PrintObjectRegions::PaintedRegion& painted : range.painted_regions)
+            sliced_filaments.insert(painted.extruder_id);
+    CHECK(sliced_filaments.find(exterior_filament) != sliced_filaments.end());
+    CHECK(sliced_filaments.find(cavity_filament) != sliced_filaments.end());
 }
 
 TEST_CASE("ExtrusionPath copies preserve inset index", "[MixedFilament]")

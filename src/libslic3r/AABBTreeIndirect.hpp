@@ -12,9 +12,12 @@
 #include <vector>
 
 #include <Eigen/Geometry>
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_invoke.h>
+#include <tbb/parallel_for.h>
 
 #include "BoundingBox.hpp"
-#include "Utils.hpp" // for next_highest_power_of_2()
+#include "Utils.hpp" // for next_highest_power_of_2() and SCALED_EPSILON
 
 // Definition of the ray intersection hit structure.
 #include <igl/Hit.h>
@@ -23,14 +26,8 @@ namespace Slic3r {
 namespace AABBTreeIndirect {
 
 // Static balanced AABB tree for raycasting and closest triangle search.
-// The balanced tree is built over a single large std::vector of nodes, where the children of nodes
-// are addressed implicitely using a power of two indexing rule.
-// Memory for a full balanced tree is allocated, but not all nodes at the last level are used.
-// This may seem like a waste of memory, but one saves memory for the node links and there is zero
-// overhead of a memory allocator management (usually the memory allocator adds at least one pointer 
-// before the memory returned). However, allocating memory in a single vector is very fast even
-// in multi-threaded environment and it is cache friendly.
-//
+// The balanced tree uses implicit heap indices for child links. Storage is
+// allocated once, which keeps traversal cache-friendly.
 // A balanced tree is built upon a vector of bounding boxes and their centroids, storing the reference
 // to the source entity (a 3D triangle, a 2D segment etc, a 3D or 2D point etc).
 // The source bounding boxes may have an epsilon applied to fight numeric rounding errors when 
@@ -51,10 +48,9 @@ public:
         inner = size_t(-2)
     };
 
-    // Single node of the implicit balanced AABB tree. There are no links to the children nodes,
-    // as these links are calculated implicitely using a power of two rule.
+    // Single node in the implicit balanced tree.
     struct Node {
-    	// Index of the external source entity, for which this AABB tree was built, npos for internal nodes.
+        // Index of the external source entity, for which this tree was built.
         size_t 			idx = npos;
     	// Bounding box around this entity, possibly with epsilons applied to fight numeric rounding errors
     	// when traversing the AABB tree.
@@ -95,7 +91,7 @@ public:
         if (input.empty())
 			clear();
 		else {
-			// Allocate enough memory for a full binary tree.
+			// Allocate the complete balanced tree up to the next power of two.
             m_nodes.assign(next_highest_power_of_2(input.size()) * 2 - 1, Node());
             build_recursive(input, 0, 0, input.size() - 1);
 		}
@@ -145,14 +141,18 @@ private:
 		// Insert an inner node into the tree. Inner node does not reference any input entity (triangle, line segment etc).
 		m_nodes[node].idx  = inner;
 		m_nodes[node].bbox = bbox;
-        build_recursive(input, node * 2 + 1, left, center);
-		build_recursive(input, node * 2 + 2, center + 1, right);
+        constexpr size_t parallel_threshold = 1024;
+        if (right - left + 1 >= parallel_threshold) {
+            tbb::parallel_invoke(
+				[&] { build_recursive(input, node * 2 + 1, left, center); },
+				[&] { build_recursive(input, node * 2 + 2, center + 1, right); });
+        } else {
+			build_recursive(input, node * 2 + 1, left, center);
+			build_recursive(input, node * 2 + 2, center + 1, right);
+        }
 	}
 
-	// Partition the input m_nodes <left, right> at "k" and "dimension" using the QuickSelect method:
-	// https://en.wikipedia.org/wiki/Quickselect
-	// Items left of the k'th item are lower than the k'th item in the "dimension", 
-	// items right of the k'th item are higher than the k'th item in the "dimension", 
+	// Partition the input around the median centroid on one axis using quickselect.
 	template<typename SourceNode>
 	void partition_input(std::vector<SourceNode> &input, const size_t dimension, size_t left, size_t right, const size_t k) const
 	{
@@ -160,8 +160,6 @@ private:
 			size_t center = (left + right) / 2;
 			CoordType pivot;
 			{
-				// Bubble sort the input[left], input[center], input[right], so that a median of the three values
-				// will end up in input[center].
 				CoordType left_value   = input[left  ].centroid()(dimension);
 				CoordType center_value = input[center].centroid()(dimension);
 				CoordType right_value  = input[right ].centroid()(dimension);
@@ -180,29 +178,21 @@ private:
 				pivot = center_value;
 			}
 			if (right <= left + 2)
-				// The <left, right> interval is already sorted.
 				break;
 			size_t i = left;
 			size_t j = right - 1;
 			std::swap(input[center], input[j]);
-			// Partition the set based on the pivot.
 			for (;;) {
-				// Skip left points that are already at correct positions.
-				// Search will certainly stop at position (right - 1), which stores the pivot.
 				while (input[++ i].centroid()(dimension) < pivot) ;
-				// Skip right points that are already at correct positions.
 				while (input[-- j].centroid()(dimension) > pivot && i < j) ;
 				if (i >= j)
 					break;
 				std::swap(input[i], input[j]);
 			}
-			// Restore pivot to the center of the sequence.
 			std::swap(input[i], input[right - 1]);
-			// Which side the kth element is in?
 			if (k < i)
 				right = i - 1;
 			else if (k == i)
-				// Sequence is partitioned, kth element is at its place.
 				break;
 			else
 				left = i + 1;
@@ -420,8 +410,8 @@ namespace detail {
 		    	return false;
 	  	} else {
 			// Left / right child node index.
-			size_t left  = node_idx * 2 + 1;
-			size_t right = left + 1;
+			size_t left  = ray_intersector.tree.left_child_idx(node_idx);
+			size_t right = ray_intersector.tree.right_child_idx(node_idx);
 			igl::Hit left_hit;
 			igl::Hit right_hit;
 	        bool left_ret = intersect_ray_recursive_first_hit(ray_intersector, left,  min_t, left_hit);
@@ -463,8 +453,8 @@ namespace detail {
 			}
 	  	} else {
 			// Left / right child node index.
-			size_t left  = node_idx * 2 + 1;
-			size_t right = left + 1;
+			size_t left  = ray_intersector.tree.left_child_idx(node_idx);
+			size_t right = ray_intersector.tree.right_child_idx(node_idx);
 		  	intersect_ray_recursive_all_hits(ray_intersector, left);
 		  	intersect_ray_recursive_all_hits(ray_intersector, right);
 		}
@@ -581,8 +571,8 @@ namespace detail {
   		} 
   		else
   		{
-			size_t left_node_idx  = node_idx * 2 + 1;
-            size_t right_node_idx = left_node_idx + 1;
+			size_t left_node_idx  = distancer.tree.left_child_idx(node_idx);
+			size_t right_node_idx = distancer.tree.right_child_idx(node_idx);
 			const auto &node_left  = distancer.tree.node(left_node_idx);
 			const auto &node_right = distancer.tree.node(right_node_idx);
 			assert(node_left.is_valid());
@@ -644,8 +634,8 @@ namespace detail {
             distancer.closest_point_to_origin(node.idx, sqr_dist);
             if (sqr_dist < squared_distance_limit) { found_primitives_indices.push_back(node.idx); }
         } else {
-            size_t      left_node_idx  = node_idx * 2 + 1;
-            size_t      right_node_idx = left_node_idx + 1;
+            size_t      left_node_idx  = distancer.tree.left_child_idx(node_idx);
+            size_t      right_node_idx = distancer.tree.right_child_idx(node_idx);
             const auto &node_left      = distancer.tree.node(left_node_idx);
             const auto &node_right     = distancer.tree.node(right_node_idx);
             assert(node_left.is_valid());
@@ -692,23 +682,31 @@ inline Tree<3, typename VertexType::Scalar> build_aabb_tree_over_indexed_triangl
         VectorType 	m_centroid;
 	};
 
-	std::vector<InputType> input;
-	input.reserve(faces.size());
+	std::vector<InputType> input(faces.size());
     const VectorType veps(eps, eps, eps);
-	for (size_t i = 0; i < faces.size(); ++ i) {
-        const IndexedFaceType &face = faces[i];
-		const VertexType &v1 = vertices[face(0)];
-		const VertexType &v2 = vertices[face(1)];
-		const VertexType &v3 = vertices[face(2)];
-		InputType n;
-        n.m_idx      = i;
-        n.m_centroid = (1./3.) * (v1 + v2 + v3);
-        n.m_bbox = BoundingBox(v1, v1);
-        n.m_bbox.extend(v2);
-        n.m_bbox.extend(v3);
-        n.m_bbox.min() -= veps;
-        n.m_bbox.max() += veps;
-        input.emplace_back(n);
+	auto fill_input = [&](size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) {
+            const IndexedFaceType& face = faces[i];
+			const VertexType& v1 = vertices[face(0)];
+			const VertexType& v2 = vertices[face(1)];
+			const VertexType& v3 = vertices[face(2)];
+			InputType& n = input[i];
+            n.m_idx = i;
+            n.m_centroid = (1. / 3.) * (v1 + v2 + v3);
+            n.m_bbox = BoundingBox(v1, v1);
+            n.m_bbox.extend(v2);
+            n.m_bbox.extend(v3);
+            n.m_bbox.min() -= veps;
+            n.m_bbox.max() += veps;
+        }
+	};
+    constexpr size_t parallel_input_threshold = 50'000;
+    if (faces.size() >= parallel_input_threshold) {
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, faces.size(), 4096), [&](const auto& range) {
+            fill_input(range.begin(), range.end());
+        });
+    } else {
+        fill_input(0, faces.size());
 	}
 
 	TreeType out;
@@ -966,7 +964,7 @@ bool traverse_recurse(const Tree<Dims, T> &tree,
         // Left / right child node index.
         // Returns true if both children allow the traversal to continue.
         return trv(Tree<Dims, T>::left_child_idx(idx)) &&
-        	   trv(Tree<Dims, T>::right_child_idx(idx));
+		   trv(tree.right_child_idx(idx));
     }
 }
 

@@ -7,6 +7,12 @@
 
 #include <boost/next_prior.hpp>
 #include "boost/log/trivial.hpp"
+#include <algorithm>
+#include <array>
+#include <limits>
+#include <map>
+#include <numeric>
+#include <set>
 // Include igl first. It defines "L" macro which then clashes with our localization
 #include <igl/copyleft/cgal/mesh_boolean.h>
 #undef L
@@ -21,6 +27,8 @@
 #include <CGAL/Polygon_mesh_processing/remesh.h>
 #include <CGAL/Polygon_mesh_processing/polygon_soup_to_polygon_mesh.h>
 #include <CGAL/Polygon_mesh_processing/orientation.h>
+#include <CGAL/Polygon_mesh_processing/intersection.h>
+#include <CGAL/Side_of_triangle_mesh.h>
 // BBS: for segment
 #include <CGAL/mesh_segmentation.h>
 #include <CGAL/property_map.h>
@@ -560,6 +568,8 @@ struct McutMesh
     std::vector<uint32_t> faceSizesArray;
     std::vector<uint32_t> faceIndicesArray;
     std::vector<double>   vertexCoordsArray;
+    std::vector<uint8_t>  source_faces;
+    std::vector<size_t>   source_face_ids;
 };
 void McutMeshDeleter::operator()(McutMesh *ptr) { delete ptr; }
 
@@ -631,13 +641,77 @@ TriangleMesh mcut_to_triangle_mesh(const McutMesh &mcutmesh)
 }
 
 void merge_mcut_meshes(McutMesh& src, const McutMesh& cut) {
+    const std::vector<uint8_t> src_origins = src.source_faces;
+    const std::vector<uint8_t> cut_origins = cut.source_faces;
+    const std::vector<size_t> src_face_ids = src.source_face_ids;
+    const std::vector<size_t> cut_face_ids = cut.source_face_ids;
     indexed_triangle_set all_its;
     TriangleMesh tri_src = mcut_to_triangle_mesh(src);
     TriangleMesh tri_cut = mcut_to_triangle_mesh(cut);
     its_merge(all_its, tri_src.its);
     its_merge(all_its, tri_cut.its);
     src = *triangle_mesh_to_mcut(all_its);
+    src.source_faces = src_origins;
+    src.source_faces.insert(src.source_faces.end(), cut_origins.begin(), cut_origins.end());
+    src.source_face_ids = src_face_ids;
+    src.source_face_ids.insert(src.source_face_ids.end(), cut_face_ids.begin(), cut_face_ids.end());
+}
+
+using BooleanFaceKey = std::array<float, 9>;
+
+BooleanFaceKey boolean_face_key(const indexed_triangle_set& its, size_t face_index)
+{
+    std::array<std::array<float, 3>, 3> points;
+    const Vec3i32& face = its.indices[face_index];
+    for (size_t vertex = 0; vertex < 3; ++vertex) {
+        const Vec3f& point = its.vertices[face[vertex]];
+        points[vertex] = {point.x(), point.y(), point.z()};
     }
+    std::sort(points.begin(), points.end());
+    BooleanFaceKey key{};
+    for (size_t vertex = 0; vertex < 3; ++vertex)
+        for (size_t axis = 0; axis < 3; ++axis)
+            key[vertex * 3 + axis] = points[vertex][axis];
+    return key;
+}
+
+bool map_boolean_face_provenance(const indexed_triangle_set& source_its, const std::vector<uint8_t>& source_classes,
+                                 const std::vector<size_t>& source_face_ids, const indexed_triangle_set& part_its,
+                                 std::vector<uint8_t>& part_classes, std::vector<size_t>& part_face_ids, bool& ambiguous)
+{
+    if (source_classes.size() != source_its.indices.size() || source_face_ids.size() != source_its.indices.size())
+        return false;
+
+    struct Provenance { uint8_t source_class; size_t source_face_id; };
+    std::map<BooleanFaceKey, Provenance> provenance_by_face;
+    std::set<BooleanFaceKey> ambiguous_faces;
+    for (size_t face = 0; face < source_its.indices.size(); ++face) {
+        const BooleanFaceKey key = boolean_face_key(source_its, face);
+        const Provenance provenance{source_classes[face], source_face_ids[face]};
+        const auto [it, inserted] = provenance_by_face.emplace(key, provenance);
+        if (!inserted && (it->second.source_class != provenance.source_class ||
+                          it->second.source_face_id != provenance.source_face_id))
+            ambiguous_faces.insert(key);
+    }
+
+    part_classes.clear();
+    part_face_ids.clear();
+    part_classes.reserve(part_its.indices.size());
+    part_face_ids.reserve(part_its.indices.size());
+    for (size_t face = 0; face < part_its.indices.size(); ++face) {
+        const BooleanFaceKey key = boolean_face_key(part_its, face);
+        const auto it = provenance_by_face.find(key);
+        if (ambiguous_faces.find(key) != ambiguous_faces.end()) {
+            ambiguous = true;
+            return false;
+        }
+        if (it == provenance_by_face.end())
+            return false;
+        part_classes.push_back(it->second.source_class);
+        part_face_ids.push_back(it->second.source_face_id);
+    }
+    return true;
+}
 
 MCAPI_ATTR void MCAPI_CALL mcDebugOutput(McDebugSource source,
     McDebugType type,
@@ -713,10 +787,18 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
     };
 
     std::map<std::string, McFlags>::const_iterator it          = booleanOpts.find(boolean_opts);
-    McFlags                                        boolOpFlags = it->second;
+    if (it == booleanOpts.end()) {
+        mcReleaseContext(context);
+        return false;
+    }
+    McFlags                                        boolOpFlags = it->second | MC_DISPATCH_INCLUDE_FACE_MAP;
 
     if (srcMesh.vertexCoordsArray.empty() && (boolean_opts == "UNION" || boolean_opts == "B_NOT_A")) {
         srcMesh = cutMesh;
+        if (srcMesh.source_faces.empty())
+            srcMesh.source_faces.assign(srcMesh.faceSizesArray.size(), 0);
+        if (srcMesh.source_face_ids.empty())
+            srcMesh.source_face_ids.assign(srcMesh.faceSizesArray.size(), no_source_face);
         mcReleaseContext(context);
         return true;
     }
@@ -742,16 +824,20 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
     }
 
     // query the number of available connected component
-    uint32_t numConnComps;
+    uint32_t numConnComps = 0;
     err = mcGetConnectedComponents(context, MC_CONNECTED_COMPONENT_TYPE_FRAGMENT, 0, NULL, &numConnComps);
-    if (err != MC_NO_ERROR || numConnComps==0) {
+    if (err != MC_NO_ERROR) {
         BOOST_LOG_TRIVIAL(debug) << "MCUT mcGetConnectedComponents fails! err=" << err << ", numConnComps" << numConnComps;
         mcReleaseContext(context);
-        if (numConnComps == 0 && boolean_opts == "UNION") {
-            merge_mcut_meshes(srcMesh, cutMesh);
-            return true;
-        }
         return false;
+    }
+    if (numConnComps == 0) {
+        if (boolean_opts == "UNION")
+            merge_mcut_meshes(srcMesh, cutMesh);
+        else
+            srcMesh = McutMesh{}; // Valid empty result: the operation removed/intersected everything.
+        mcReleaseContext(context);
+        return true;
     }
 
     std::vector<McConnectedComponent> connectedComponents(numConnComps, MC_NULL_HANDLE);
@@ -771,14 +857,79 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
         std::vector<double> ccVertices((uint64_t) ccVertexCount * 3u, 0);
         err = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_VERTEX_DOUBLE, numBytes, (void *) ccVertices.data(), NULL);
 
-        // query the faces
+        // Ask for triangles first so MCUT builds its triangulation cache, then
+        // query the corresponding source-face map from that cache.
         numBytes = 0;
-        err      = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_FACE_TRIANGULATION, 0, NULL, &numBytes);
+        err = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_FACE_TRIANGULATION, 0, NULL, &numBytes);
+        if (err != MC_NO_ERROR || numBytes % (3 * sizeof(uint32_t)) != 0) {
+            BOOST_LOG_TRIVIAL(debug) << "MCUT face triangulation query failed! err=" << err;
+            mcReleaseConnectedComponents(context, 0, NULL);
+            mcReleaseContext(context);
+            return false;
+        }
         std::vector<uint32_t> ccFaceIndices(numBytes / sizeof(uint32_t), 0);
-        err = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_FACE_TRIANGULATION, numBytes, ccFaceIndices.data(), NULL);
+        if (numBytes != 0) {
+            err = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_FACE_TRIANGULATION, numBytes,
+                                              ccFaceIndices.data(), NULL);
+            if (err != MC_NO_ERROR) {
+                BOOST_LOG_TRIVIAL(debug) << "MCUT face triangulation read failed! err=" << err;
+                mcReleaseConnectedComponents(context, 0, NULL);
+                mcReleaseContext(context);
+                return false;
+            }
+        }
         std::vector<uint32_t> faceSizes(ccFaceIndices.size() / 3, 3);
-
         const uint32_t ccFaceCount = static_cast<uint32_t>(faceSizes.size());
+
+        numBytes = 0;
+        err = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_FACE_TRIANGULATION_MAP, 0, NULL, &numBytes);
+        if (err != MC_NO_ERROR || numBytes % sizeof(uint32_t) != 0) {
+            BOOST_LOG_TRIVIAL(debug) << "MCUT face provenance query failed! err=" << err;
+            mcReleaseConnectedComponents(context, 0, NULL);
+            mcReleaseContext(context);
+            return false;
+        }
+        std::vector<uint32_t> ccFaceSources(numBytes / sizeof(uint32_t));
+        if (numBytes != 0) {
+            err = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_FACE_TRIANGULATION_MAP, numBytes,
+                                              ccFaceSources.data(), NULL);
+            if (err != MC_NO_ERROR) {
+                BOOST_LOG_TRIVIAL(debug) << "MCUT face provenance read failed! err=" << err;
+                mcReleaseConnectedComponents(context, 0, NULL);
+                mcReleaseContext(context);
+                return false;
+            }
+        }
+        if (ccFaceSources.size() != ccFaceCount) {
+            BOOST_LOG_TRIVIAL(debug) << "MCUT triangulated face provenance count mismatch: mapped=" << ccFaceSources.size()
+                                     << " triangles=" << ccFaceCount;
+            mcReleaseConnectedComponents(context, 0, NULL);
+            mcReleaseContext(context);
+            return false;
+        }
+
+        const size_t source_face_count = srcMesh.faceSizesArray.size();
+        const size_t cut_face_count = cutMesh.faceSizesArray.size();
+        if (srcMesh.source_faces.size() != source_face_count || srcMesh.source_face_ids.size() != source_face_count) {
+            BOOST_LOG_TRIVIAL(debug) << "MCUT source provenance does not match source faces";
+            mcReleaseConnectedComponents(context, 0, NULL);
+            mcReleaseContext(context);
+            return false;
+        }
+        for (uint32_t face_source : ccFaceSources) {
+            if (face_source < source_face_count) {
+                outMesh.source_faces.push_back(srcMesh.source_faces[face_source]);
+                outMesh.source_face_ids.push_back(srcMesh.source_face_ids[face_source]);
+            } else if (face_source - source_face_count < cut_face_count) {
+                outMesh.source_faces.push_back(0);
+                outMesh.source_face_ids.push_back(no_source_face);
+            } else {
+                BOOST_LOG_TRIVIAL(debug) << "MCUT returned an out-of-range face provenance ID: " << face_source;
+                mcReleaseConnectedComponents(context, 0, NULL);
+                mcReleaseContext(context);
+                return false;
+            }
+        }
 
         // Here we show, how to know when connected components, pertain particular boolean operations.
         McPatchLocation patchLocation = (McPatchLocation) 0;
@@ -826,8 +977,13 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
     return true;
 }
 
-void do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts)
+static bool do_boolean_impl(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts,
+                            bool& ambiguous_source_provenance)
 {
+    if (boolean_opts != "A_NOT_B" && boolean_opts != "B_NOT_A" && boolean_opts != "UNION" &&
+        boolean_opts != "INTERSECTION")
+        return false;
+
     TriangleMesh tri_src = mcut_to_triangle_mesh(srcMesh);
     std::vector<indexed_triangle_set> src_parts = its_split(tri_src.its);
 
@@ -836,51 +992,176 @@ void do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& b
 
     if (src_parts.empty() && boolean_opts == "UNION") {
         srcMesh = cutMesh;
-        return;
+        if (srcMesh.source_faces.empty())
+            srcMesh.source_faces.assign(srcMesh.faceSizesArray.size(), 0);
+        if (srcMesh.source_face_ids.empty())
+            srcMesh.source_face_ids.assign(srcMesh.faceSizesArray.size(), no_source_face);
+        return true;
     }
-    if(cut_parts.empty()) return;
+    if (cut_parts.empty()) {
+        if (boolean_opts == "INTERSECTION")
+            srcMesh = McutMesh{};
+        return true;
+    }
 
     // when src mesh has multiple connected components, mcut refuses to work.
     // But we can force it to work by spliting the src mesh into disconnected components,
     // and do booleans seperately, then merge all the results.
     indexed_triangle_set all_its;
+    std::vector<uint8_t> all_source_faces;
+    std::vector<size_t> all_source_face_ids;
+    std::vector<std::vector<uint8_t>> src_part_classes(src_parts.size()), cut_part_classes(cut_parts.size());
+    std::vector<std::vector<size_t>> src_part_face_ids(src_parts.size()), cut_part_face_ids(cut_parts.size());
+    for (size_t i = 0; i < src_parts.size(); ++i)
+        if (!map_boolean_face_provenance(tri_src.its, srcMesh.source_faces, srcMesh.source_face_ids, src_parts[i],
+                                         src_part_classes[i], src_part_face_ids[i], ambiguous_source_provenance))
+            return false;
+    for (size_t i = 0; i < cut_parts.size(); ++i)
+        if (!map_boolean_face_provenance(tri_cut.its, cutMesh.source_faces, cutMesh.source_face_ids, cut_parts[i],
+                                         cut_part_classes[i], cut_part_face_ids[i], ambiguous_source_provenance))
+            return false;
+
     if (boolean_opts == "UNION" || boolean_opts == "A_NOT_B") {
         for (size_t i = 0; i < src_parts.size(); i++) {
             auto src_part = triangle_mesh_to_mcut(src_parts[i]);
+            src_part->source_faces = src_part_classes[i];
+            src_part->source_face_ids = src_part_face_ids[i];
             for (size_t j = 0; j < cut_parts.size(); j++) {
+                if (boolean_opts == "A_NOT_B" &&
+                    !TriangleMesh(src_parts[i]).bounding_box().intersects(TriangleMesh(cut_parts[j]).bounding_box()))
+                    continue;
                 auto cut_part = triangle_mesh_to_mcut(cut_parts[j]);
-                do_boolean_single(*src_part, *cut_part, boolean_opts);
+                cut_part->source_faces = cut_part_classes[j];
+                cut_part->source_face_ids = cut_part_face_ids[j];
+                if (!do_boolean_single(*src_part, *cut_part, boolean_opts))
+                    return false;
+                if (boolean_opts == "A_NOT_B" && empty(*src_part))
+                    break;
             }
             TriangleMesh tri_part = mcut_to_triangle_mesh(*src_part);
             its_merge(all_its, tri_part.its);
+            all_source_faces.insert(all_source_faces.end(), src_part->source_faces.begin(), src_part->source_faces.end());
+            all_source_face_ids.insert(all_source_face_ids.end(), src_part->source_face_ids.begin(), src_part->source_face_ids.end());
         }
     }
     else if (boolean_opts == "INTERSECTION") {
         for (size_t i = 0; i < src_parts.size(); i++) {
             for (size_t j = 0; j < cut_parts.size(); j++) {
                 auto src_part = triangle_mesh_to_mcut(src_parts[i]);
+                src_part->source_faces = src_part_classes[i];
+                src_part->source_face_ids = src_part_face_ids[i];
                 auto cut_part = triangle_mesh_to_mcut(cut_parts[j]);
+                cut_part->source_faces = cut_part_classes[j];
+                cut_part->source_face_ids = cut_part_face_ids[j];
                 bool success = do_boolean_single(*src_part, *cut_part, boolean_opts);
-                if (success) {
-                    TriangleMesh tri_part = mcut_to_triangle_mesh(*src_part);
-                    its_merge(all_its, tri_part.its);
-                }
+                if (!success)
+                    return false;
+                TriangleMesh tri_part = mcut_to_triangle_mesh(*src_part);
+                its_merge(all_its, tri_part.its);
+                all_source_faces.insert(all_source_faces.end(), src_part->source_faces.begin(), src_part->source_faces.end());
+                all_source_face_ids.insert(all_source_face_ids.end(), src_part->source_face_ids.begin(), src_part->source_face_ids.end());
             }
         }
     }
+    if (all_its.indices.size() != all_source_faces.size() || all_its.indices.size() != all_source_face_ids.size())
+        return false;
     srcMesh = *triangle_mesh_to_mcut(all_its);
+    srcMesh.source_faces = std::move(all_source_faces);
+    srcMesh.source_face_ids = std::move(all_source_face_ids);
+    return true;
+}
+
+bool do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts)
+{
+    bool ambiguous_source_provenance = false;
+    return do_boolean_impl(srcMesh, cutMesh, boolean_opts, ambiguous_source_provenance);
+}
+
+static bool subtracts_entire_source(const TriangleMesh& source, const TriangleMesh& cutter)
+{
+    if (source.empty() || cutter.empty())
+        return false;
+    const BoundingBoxf3 source_bounds = source.bounding_box();
+    const BoundingBoxf3 cutter_bounds = cutter.bounding_box();
+    if (!source_bounds.defined || !cutter_bounds.defined ||
+        (cutter_bounds.min.array() > source_bounds.min.array()).any() ||
+        (cutter_bounds.max.array() < source_bounds.max.array()).any())
+        return false;
+
+    try {
+        auto source_cgal = cgal::triangle_mesh_to_cgal(source);
+        auto cutter_cgal = cgal::triangle_mesh_to_cgal(cutter);
+        const bool source_self_intersects = cgal::does_self_intersect(*source_cgal);
+        const bool cutter_self_intersects = cgal::does_self_intersect(*cutter_cgal);
+        if (source_self_intersects || cutter_self_intersects)
+            return false;
+        const bool surfaces_intersect = cgal::CGALProc::do_intersect(
+            source_cgal->m, cutter_cgal->m,
+            CGAL::parameters::do_overlap_test_of_bounded_sides(false), CGAL::parameters::all_default());
+
+        CGAL::Side_of_triangle_mesh<cgal::_EpicMesh, cgal::EpicKernel> point_inside_cutter(cutter_cgal->m);
+        for (const indexed_triangle_set& part : its_split(source.its)) {
+            if (part.vertices.empty())
+                continue;
+            auto is_inside_or_on_boundary = [&point_inside_cutter](const Vec3f& sample) {
+                const cgal::_EpicMesh::Point point(sample.x(), sample.y(), sample.z());
+                return point_inside_cutter(point) != CGAL::ON_UNBOUNDED_SIDE;
+            };
+            if (!surfaces_intersect) {
+                if (!is_inside_or_on_boundary(part.vertices.front()))
+                    return false;
+                continue;
+            }
+            for (const Vec3f& vertex : part.vertices)
+                if (!is_inside_or_on_boundary(vertex))
+                    return false;
+            for (const auto& face : part.indices) {
+                const Vec3f sample = (part.vertices[face(0)] + part.vertices[face(1)] + part.vertices[face(2)]) / 3.f;
+                if (!is_inside_or_on_boundary(sample))
+                    return false;
+            }
+        }
+        return true;
+    } catch (...) {
+        // Leave malformed or unsupported input to the primary backend, which
+        // reports an operation failure without mutating the caller's meshes.
+        return false;
+    }
+}
+
+bool make_boolean(const TriangleMesh& src_mesh, const TriangleMesh& cut_mesh, BooleanResult& result, const std::string& boolean_opts)
+{
+    result = BooleanResult{};
+    if (boolean_opts == "A_NOT_B" && subtracts_entire_source(src_mesh, cut_mesh))
+        return true;
+    McutMesh srcMesh, cutMesh;
+    triangle_mesh_to_mcut(src_mesh, srcMesh);
+    triangle_mesh_to_mcut(cut_mesh, cutMesh);
+    srcMesh.source_faces.assign(srcMesh.faceSizesArray.size(), 1);
+    cutMesh.source_faces.assign(cutMesh.faceSizesArray.size(), 0);
+    srcMesh.source_face_ids.resize(srcMesh.faceSizesArray.size());
+    std::iota(srcMesh.source_face_ids.begin(), srcMesh.source_face_ids.end(), size_t(0));
+    cutMesh.source_face_ids.assign(cutMesh.faceSizesArray.size(), no_source_face);
+    bool ambiguous_source_provenance = false;
+    if (!do_boolean_impl(srcMesh, cutMesh, boolean_opts, ambiguous_source_provenance)) {
+        result.failure = ambiguous_source_provenance ? BooleanFailure::AmbiguousSourceFaceProvenance : BooleanFailure::OperationFailed;
+        return false;
+    }
+    result.mesh = mcut_to_triangle_mesh(srcMesh);
+    result.source_faces = std::move(srcMesh.source_faces);
+    result.source_face_ids = std::move(srcMesh.source_face_ids);
+    const bool valid_result = result.source_faces.size() == result.mesh.its.indices.size() &&
+                              result.source_face_ids.size() == result.mesh.its.indices.size();
+    result.failure = valid_result ? BooleanFailure::None : BooleanFailure::OperationFailed;
+    return valid_result;
 }
 
 void make_boolean(const TriangleMesh &src_mesh, const TriangleMesh &cut_mesh, std::vector<TriangleMesh> &dst_mesh, const std::string &boolean_opts)
 {
-    McutMesh srcMesh, cutMesh;
-    triangle_mesh_to_mcut(src_mesh, srcMesh);
-    triangle_mesh_to_mcut(cut_mesh, cutMesh);
-    //dst_mesh = make_boolean(srcMesh, cutMesh, boolean_opts);
-    do_boolean(srcMesh, cutMesh, boolean_opts);
-    TriangleMesh tri_src = mcut_to_triangle_mesh(srcMesh);
-    if (!tri_src.empty())
-        dst_mesh.push_back(std::move(tri_src));
+    BooleanResult result;
+    if (!make_boolean(src_mesh, cut_mesh, result, boolean_opts) || result.mesh.empty())
+        return;
+    dst_mesh.push_back(std::move(result.mesh));
 }
 
 } // namespace mcut

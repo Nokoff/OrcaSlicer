@@ -26,3 +26,23 @@ TEST_CASE("Plate picking ignores IDs left behind by a deleted second plate", "[P
     REQUIRE(plates.get_plate(0) == first_plate);
     REQUIRE(plates.get_curr_plate_index() == 0);
 }
+
+TEST_CASE("Mesh changes invalidate slice results on every plate", "[PartPlate][fast]")
+{
+    GUI::PartPlateList plates(256, 256, 256, nullptr, nullptr, ptFFF);
+    REQUIRE(plates.create_plate(false) == 1);
+
+    GUI::PartPlate* first_plate = plates.get_plate(0);
+    GUI::PartPlate* second_plate = plates.get_plate(1);
+    REQUIRE(first_plate != nullptr);
+    REQUIRE(second_plate != nullptr);
+    first_plate->update_slice_result_valid_state(true);
+    second_plate->update_slice_result_valid_state(true);
+    REQUIRE(first_plate->is_slice_result_valid());
+    REQUIRE(second_plate->is_slice_result_valid());
+
+    plates.invalid_all_slice_result();
+
+    CHECK_FALSE(first_plate->is_slice_result_valid());
+    CHECK_FALSE(second_plate->is_slice_result_valid());
+}

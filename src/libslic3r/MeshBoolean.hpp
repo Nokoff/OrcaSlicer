@@ -3,6 +3,9 @@
 
 #include <memory>
 #include <exception>
+#include <cstdint>
+#include <limits>
+#include <vector>
 
 #include <libslic3r/TriangleMesh.hpp>
 #include <Eigen/Geometry>
@@ -90,6 +93,22 @@ bool empty(const CGALMesh &mesh);
 }
 
 namespace mcut {
+inline constexpr size_t no_source_face = std::numeric_limits<size_t>::max();
+
+enum class BooleanFailure : uint8_t { None, OperationFailed, AmbiguousSourceFaceProvenance };
+
+struct BooleanResult
+{
+    TriangleMesh mesh;
+    // One byte per result triangle. Non-zero means MCUT traced that face to
+    // the source mesh; zero denotes a face originating from the cutter.
+    std::vector<uint8_t> source_faces;
+    // Original source-triangle index for target-derived faces. Cutter faces use
+    // mcut::no_source_face for cutter-derived faces.
+    std::vector<size_t> source_face_ids;
+    BooleanFailure failure = BooleanFailure::None;
+};
+
 struct McutMesh;
 struct McutMeshDeleter
 {
@@ -106,11 +125,12 @@ TriangleMesh mcut_to_triangle_mesh(const McutMesh &mcutmesh);
 bool do_boolean_single(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts);
 // do boolean of mesh with multiple volumes and save result to srcMesh
 // Both srcMesh and cutMesh may have multiple volumes.
-void do_boolean(McutMesh &srcMesh, const McutMesh &cutMesh, const std::string &boolean_opts);
+bool do_boolean(McutMesh &srcMesh, const McutMesh &cutMesh, const std::string &boolean_opts);
 
 
 // do boolean and convert result to TriangleMesh
 void make_boolean(const TriangleMesh &src_mesh, const TriangleMesh &cut_mesh, std::vector<TriangleMesh> &dst_mesh, const std::string &boolean_opts);
+bool make_boolean(const TriangleMesh& src_mesh, const TriangleMesh& cut_mesh, BooleanResult& result, const std::string& boolean_opts);
 } // namespace mcut
 
 } // namespace MeshBoolean

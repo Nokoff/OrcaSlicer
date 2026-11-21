@@ -832,6 +832,11 @@ public:
         CutConnectorType    connector_type{ CutConnectorType::Plug };
         float               radius_tolerance{ 0.f };// [0.f : 1.f]
         float               height_tolerance{ 0.f };// [0.f : 1.f]
+        // Temporary owner tag used only while transferring annotations through a cut.
+        // Deliberately omitted from serialization, like is_from_upper.
+        std::vector<ObjectID> painting_source_ids;
+        // Per-face mask for cut-generated caps, also transient between cut and paint restore.
+        std::vector<uint8_t> cap_faces;
 
         CutInfo() = default;
         CutInfo(CutConnectorType type, float rad_tolerance, float h_tolerance, bool processed = false) :
@@ -887,7 +892,9 @@ public:
 
     // Save and spatially restore painted facets when an operation replaces this volume's mesh.
     std::optional<TriangleSelector::SavedPainting> save_painting() const;
-    void restore_painting(const std::optional<TriangleSelector::SavedPainting>& saved, bool keep_existing_paint = false);
+    void restore_painting(const std::optional<TriangleSelector::SavedPainting>& saved, bool keep_existing_paint = false,
+                          const std::vector<uint8_t>* target_face_filter = nullptr,
+                          const std::vector<size_t>* target_face_source_faces = nullptr);
 
     // BBS: quick access for volume extruders, 1 based
     mutable std::vector<int> mmuseg_extruders;

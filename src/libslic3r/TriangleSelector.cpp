@@ -2462,6 +2462,16 @@ TriangleSelector::TriangleSplittingData TriangleSelector::serialize() const {
     return out.data;
 }
 
+std::vector<EnforcerBlockerType> TriangleSelector::extract_used_facet_states(const TriangleSplittingData &data)
+{
+    std::vector<EnforcerBlockerType> states;
+    states.reserve(data.used_states.size());
+    for (size_t state = 0; state < data.used_states.size(); ++state)
+        if (data.used_states[state])
+            states.emplace_back(static_cast<EnforcerBlockerType>(state));
+    return states;
+}
+
 void TriangleSelector::deserialize(const TriangleSplittingData& data,
                                    bool                         needs_reset,
                                    EnforcerBlockerType          max_ebt,
@@ -3238,7 +3248,9 @@ TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
     const indexed_triangle_set&                                               target_its,
     const Transform3d&                                                        target_transform,
     const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting,
-    const Transform3d&                                                        source_transform)
+    const Transform3d&                                                        source_transform,
+    const std::vector<uint8_t>*                                               target_face_filter,
+    const std::vector<size_t>*                                                target_face_source_faces)
 {
     TriangleSplittingData result;
     if (source_painting.bitstream.empty())
@@ -3326,6 +3338,11 @@ TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
             const size_t face_index = node.idx;
             if (face_index >= target_mesh.its.indices.size())
                 return true;
+            if (target_face_filter && (face_index >= target_face_filter->size() || !(*target_face_filter)[face_index]))
+                return true;
+            if (target_face_source_faces &&
+                (face_index >= target_face_source_faces->size() || (*target_face_source_faces)[face_index] != triangle.source_triangle))
+                return true;
 
             const Vec3f& target_normal = target_selector.m_face_normals[face_index];
             const Vec3i32& face = target_mesh.its.indices[face_index];
@@ -3340,7 +3357,9 @@ TriangleSelector::TriangleSplittingData TriangleSelector::remap_painting(
                 std::abs((t2 - p0).dot(source_normal)) > TriangleCursor::tolerance)
                 return true;
 
-            if (TriangleCursor::normals_match(target_normal, -source_normal)) {
+            const bool source_face_match = target_face_source_faces && face_index < target_face_source_faces->size() &&
+                                           (*target_face_source_faces)[face_index] == triangle.source_triangle;
+            if (source_face_match || TriangleCursor::normals_match(target_normal, -source_normal)) {
                 // Planar cutting commonly produces faces that are exact subsets of
                 // a source face. Preserve those directly and avoid needlessly
                 // subdividing a large target triangle along coincident edges.

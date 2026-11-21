@@ -4,6 +4,7 @@
 #include "libslic3r/CutUtils.hpp"
 #include "libslic3r/CutSurface.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/TriangleSelector.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "slic3r/Utils/ModelVolumeUtils.hpp"
 
@@ -188,6 +189,195 @@ static std::vector<Cut::Part> select_upper_parts(const ModelObject& preview)
     for (const ModelVolume* volume : preview.volumes)
         selection.push_back({volume->is_from_upper(), false});
     return selection;
+}
+
+TEST_CASE("Coincident cut volumes restore paint only from their own source", "[Cut][MMUPaint]")
+{
+    Model model;
+    ModelObject* object = model.add_object();
+    object->add_instance();
+    ModelVolume* first = add_colored_cube(*object, 0., 2, "same");
+    ModelVolume* second = add_colored_cube(*object, 0., 2, "same");
+    first->name = "paint-source-first";
+    second->name = "paint-source-second";
+
+    const auto paint_face = [](ModelVolume* volume, EnforcerBlockerType state) {
+        TriangleSelector selector(volume->mesh());
+        for (size_t face = 0; face < volume->mesh().its.indices.size(); ++face)
+            selector.set_facet(static_cast<int>(face), state);
+        REQUIRE(volume->mmu_segmentation_facets.set(selector));
+    };
+    const auto first_state = static_cast<EnforcerBlockerType>(33);
+    const auto second_state = static_cast<EnforcerBlockerType>(34);
+    paint_face(first, first_state);
+    paint_face(second, second_state);
+
+    Cut cut(object, 0, Geometry::translation_transform(Vec3d(0., 0., 10.)),
+            ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepPaint);
+    const ModelObjectPtrs& results = cut.perform_with_plane();
+    REQUIRE(results.size() == 2);
+    for (const ModelObject* result : results) {
+        REQUIRE(result->volumes.size() == 2);
+        for (const ModelVolume* volume : result->volumes) {
+            const bool first_source = volume->name.find("first") != std::string::npos;
+            REQUIRE((first_source || volume->name.find("second") != std::string::npos));
+            const auto own_state = first_source ? first_state : second_state;
+            const auto other_state = first_source ? second_state : first_state;
+            CHECK(TriangleSelector::has_facets(volume->mmu_segmentation_facets.get_data(), own_state));
+            CHECK_FALSE(TriangleSelector::has_facets(volume->mmu_segmentation_facets.get_data(), other_state));
+        }
+    }
+}
+
+TEST_CASE("Repeated plane cuts retain previous paint and each generated cap filament", "[Cut][MMUPaint]")
+{
+    Model model;
+    ModelObject* object = model.add_object();
+    object->add_instance();
+    ModelVolume* volume = object->add_volume(make_cube(20., 20., 20.), ModelVolumeType::MODEL_PART, false);
+
+    const auto paint_state = static_cast<EnforcerBlockerType>(33);
+    TriangleSelector source_selector(volume->mesh());
+    for (size_t face = 0; face < volume->mesh().its.indices.size(); ++face)
+        source_selector.set_facet(static_cast<int>(face), paint_state);
+    REQUIRE(volume->mmu_segmentation_facets.set(source_selector));
+
+    Cut first_cut(object, 0, Geometry::translation_transform(Vec3d(0., 0., 10.)),
+                  ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepPaint);
+    constexpr int first_cap_filament = 34;
+    first_cut.set_new_face_filament(first_cap_filament);
+    const ModelObjectPtrs& first_results = first_cut.perform_with_plane();
+    REQUIRE(first_results.size() == 2);
+
+    // Cut the lower half again. Its z=10 cap must survive as painted source
+    // geometry while the second operation creates a separate z=5 cap.
+    Cut second_cut(first_results.back(), 0, Geometry::translation_transform(Vec3d(0., 0., 5.)),
+                  ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepPaint);
+    constexpr int second_cap_filament = 35;
+    second_cut.set_new_face_filament(second_cap_filament);
+    const ModelObjectPtrs& second_results = second_cut.perform_with_plane();
+    REQUIRE(second_results.size() == 2);
+
+    const ModelVolume* retained = second_results.front()->volumes.front();
+    TriangleSelector result_selector(retained->mesh());
+    result_selector.deserialize(retained->mmu_segmentation_facets.get_data(), false);
+    CHECK(result_selector.num_facets(paint_state) > 0);
+    CHECK(result_selector.num_facets(static_cast<EnforcerBlockerType>(first_cap_filament)) > 0);
+    CHECK(result_selector.num_facets(static_cast<EnforcerBlockerType>(second_cap_filament)) > 0);
+}
+
+TEST_CASE("Plane cuts preserve painted source volumes when connectors are present", "[Cut][MMUPaint]")
+{
+    Model model;
+    ModelObject* object = model.add_object();
+    object->add_instance();
+    ModelVolume* source = object->add_volume(make_cube(20., 20., 20.), ModelVolumeType::MODEL_PART, false);
+    source->name = "painted source";
+    TriangleSelector source_selector(source->mesh());
+    const auto source_filament = static_cast<EnforcerBlockerType>(33);
+    for (size_t face = 0; face < source->mesh().its.indices.size(); ++face)
+        source_selector.set_facet(static_cast<int>(face), source_filament);
+    REQUIRE(source->mmu_segmentation_facets.set(source_selector));
+
+    object->cut_id.init();
+    ModelVolume* connector = object->add_volume(make_cube(3., 3., 3.), ModelVolumeType::NEGATIVE_VOLUME, false);
+    connector->name = "cut connector";
+    connector->set_offset(Vec3d(5., 5., 8.));
+    connector->cut_info = ModelVolume::CutInfo(CutConnectorType::Plug, 0.1f, 0.2f, true);
+    object->cut_id.increase_connectors_cnt(1);
+
+    Cut cut(object, 0, Geometry::translation_transform(Vec3d(0., 0., 10.)),
+            ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepPaint);
+    const ModelObjectPtrs& results = cut.perform_with_plane();
+    REQUIRE(results.size() == 2);
+    for (const ModelObject* result : results) {
+        const auto painted_source = std::find_if(result->volumes.begin(), result->volumes.end(), [](const ModelVolume* volume) {
+            return volume->name == "painted source";
+        });
+        REQUIRE(painted_source != result->volumes.end());
+        CHECK(TriangleSelector::has_facets((*painted_source)->mmu_segmentation_facets.get_data(), source_filament));
+        CHECK(std::any_of(result->volumes.begin(), result->volumes.end(), [](const ModelVolume* volume) {
+            return volume->is_cut_connector();
+        }));
+    }
+}
+
+TEST_CASE("Plane cuts assign the selected filament only to generated caps", "[Cut][MMUPaint]")
+{
+    Model model;
+    ModelObject* object = model.add_object();
+    object->add_instance();
+    ModelVolume* volume = add_colored_cube(*object, 0., 2, "red");
+    TriangleSelector source_selector(volume->mesh());
+    for (size_t face = 0; face < volume->mesh().its.indices.size(); ++face)
+        source_selector.set_facet(static_cast<int>(face), static_cast<EnforcerBlockerType>(33));
+    REQUIRE(volume->mmu_segmentation_facets.set(source_selector));
+    for (FacetsAnnotation* annotation : {&volume->supported_facets, &volume->seam_facets, &volume->fuzzy_skin_facets}) {
+        TriangleSelector selector(volume->mesh());
+        selector.set_facet(0, EnforcerBlockerType::ENFORCER);
+        REQUIRE(annotation->set(selector));
+    }
+
+    Cut cut(object, 0, Geometry::translation_transform(Vec3d(0., 0., 10.)),
+            ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepPaint);
+    constexpr int cap_filament = 34;
+    cut.set_new_face_filament(cap_filament);
+    const ModelObjectPtrs& results = cut.perform_with_plane();
+    REQUIRE(results.size() == 2);
+    for (const ModelObject* result : results) {
+        REQUIRE(result->volumes.size() == 1);
+        const ModelVolume* cut_volume = result->volumes.front();
+        TriangleSelector  selector(cut_volume->mesh());
+        selector.deserialize(cut_volume->mmu_segmentation_facets.get_data(), false);
+        const indexed_triangle_set cap = selector.get_facets(static_cast<EnforcerBlockerType>(cap_filament));
+        REQUIRE_FALSE(cap.indices.empty());
+        for (const Vec3i32& face : cap.indices)
+            for (int corner = 0; corner < 3; ++corner)
+                CHECK((cut_volume->get_matrix() * cap.vertices[face[corner]].cast<double>()).z() == Catch::Approx(10.).margin(1e-5));
+        CHECK(TriangleSelector::has_facets(cut_volume->mmu_segmentation_facets.get_data(), static_cast<EnforcerBlockerType>(33)));
+
+        for (const FacetsAnnotation* annotation : {&cut_volume->supported_facets, &cut_volume->seam_facets, &cut_volume->fuzzy_skin_facets}) {
+            TriangleSelector restored(cut_volume->mesh());
+            restored.deserialize(annotation->get_data(), false);
+            const indexed_triangle_set marked = restored.get_facets(EnforcerBlockerType::ENFORCER);
+            for (const Vec3i32& face : marked.indices) {
+                bool on_cap = true;
+                for (int corner = 0; corner < 3; ++corner)
+                    on_cap &= (cut_volume->get_matrix() * marked.vertices[face[corner]].cast<double>()).z() == Catch::Approx(10.).margin(1e-5);
+                CHECK_FALSE(on_cap);
+            }
+        }
+    }
+}
+
+TEST_CASE("Plane cuts retain paint through offset, rotated, non-uniformly scaled volumes", "[Cut][MMUPaint]")
+{
+    Model model;
+    ModelObject* object = model.add_object();
+    object->add_instance();
+    ModelVolume* volume = object->add_volume(make_cube(20., 20., 20.), ModelVolumeType::MODEL_PART, false);
+    volume->set_offset(Vec3d(8., -3., 0.));
+    volume->set_rotation(Vec3d(0., 0., 0.35));
+    volume->set_scaling_factor(Vec3d(1.4, 0.8, 1.0));
+
+    const auto painted_filament = static_cast<EnforcerBlockerType>(33);
+    TriangleSelector source_selector(volume->mesh());
+    for (size_t face = 0; face < volume->mesh().its.indices.size(); ++face)
+        source_selector.set_facet(static_cast<int>(face), painted_filament);
+    REQUIRE(volume->mmu_segmentation_facets.set(source_selector));
+
+    Cut cut(object, 0, Geometry::translation_transform(Vec3d(0., 0., 10.)),
+            ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepPaint);
+    const ModelObjectPtrs& results = cut.perform_with_plane();
+    REQUIRE(results.size() == 2);
+    for (const ModelObject* result : results) {
+        REQUIRE(result->volumes.size() == 1);
+        const ModelVolume* cut_volume = result->volumes.front();
+        CHECK(TriangleSelector::has_facets(cut_volume->mmu_segmentation_facets.get_data(), painted_filament));
+        TriangleSelector restored(cut_volume->mesh());
+        restored.deserialize(cut_volume->mmu_segmentation_facets.get_data());
+        CHECK(restored.has_facets(EnforcerBlockerType::NONE));
+    }
 }
 
 TEST_CASE("Contour cuts preserve distinct part colors and settings", "[Cut][PartColor]")

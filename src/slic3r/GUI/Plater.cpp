@@ -24456,8 +24456,15 @@ void Plater::clear_before_change_mesh(int obj_idx)
 
 void Plater::changed_mesh(int obj_idx)
 {
+    if (obj_idx < 0 || size_t(obj_idx) >= model().objects.size() || !model().objects[obj_idx])
+        return;
     ModelObject* mo = model().objects[obj_idx];
-    sla::reproject_points_and_holes(mo);
+    if (!mo->volumes.empty())
+        sla::reproject_points_and_holes(mo);
+    // A linked object may be present on several plates. Editing its mesh makes
+    // every stored slice stale, even though the background worker slices only
+    // the currently selected plate.
+    post_slice_state_change_update();
     update();
     p->object_list_changed();
     p->schedule_background_process();

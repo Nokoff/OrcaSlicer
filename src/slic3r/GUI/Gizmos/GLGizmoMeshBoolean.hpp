@@ -3,7 +3,11 @@
 
 #include "GLGizmoBase.hpp"
 #include "GLGizmosCommon.hpp"
+#include "slic3r/GUI/GLModel.hpp"
 #include "libslic3r/Model.hpp"
+
+#include <atomic>
+#include <mutex>
 
 namespace Slic3r {
 
@@ -45,11 +49,16 @@ public:
     bool get_enable() { return m_enable; }
     MeshBooleanSelectingState get_selecting_state() { return m_selecting_state; }
     void set_src_volume(ModelVolume* mv) { 
+        clear_preview();
         m_src.mv = mv;
         if (m_src.mv == m_tool.mv)
             m_tool.reset();
+        m_cutter_preview_model.reset();
+        initialize_cutter_position();
+        update_cutter_preview();
     }
     void set_tool_volume(ModelVolume* mv) { 
+        clear_preview();
         m_tool.mv = mv;
         if (m_tool.mv == m_src.mv)
             m_src.reset();
@@ -79,15 +88,123 @@ protected:
     void on_save(cereal::BinaryOutputArchive &ar) const override;
 
 private:
+    enum class CutterKind { Mesh, Box, Cylinder, Sphere };
+
+    struct PreviewSurface
+    {
+        std::unique_ptr<GLModel> model;
+        ColorRGBA color;
+    };
+
+    struct HiddenPreviewVolume
+    {
+        int object_idx = -1;
+        int volume_idx = -1;
+        int instance_idx = -1;
+        ObjectID volume_id;
+        bool was_active = true;
+    };
+
+    struct PreviewFacetData
+    {
+        indexed_triangle_set facets;
+        int filament = 1;
+    };
+
+    struct PreviewAnnotations
+    {
+        TriangleSelector::TriangleSplittingData supported;
+        TriangleSelector::TriangleSplittingData seam;
+        TriangleSelector::TriangleSplittingData mmu;
+        TriangleSelector::TriangleSplittingData fuzzy;
+    };
+
+    struct Preview
+    {
+        MeshBooleanOperation operation = MeshBooleanOperation::Undef;
+        ObjectID object_id;
+        ObjectID source_id;
+        ObjectID tool_id;
+        uint64_t cutter_revision = 0;
+        bool primitive_cutter = false;
+        const TriangleMesh* source_mesh = nullptr;
+        const TriangleMesh* tool_mesh = nullptr;
+        ObjectBase::Timestamp source_config_timestamp = 0;
+        ObjectBase::Timestamp source_mmu_timestamp = 0;
+        ObjectBase::Timestamp source_support_timestamp = 0;
+        ObjectBase::Timestamp source_seam_timestamp = 0;
+        ObjectBase::Timestamp source_fuzzy_timestamp = 0;
+        Transform3d source_transform = Transform3d::Identity();
+        Transform3d tool_transform = Transform3d::Identity();
+        Transform3d cutter_instance_transform = Transform3d::Identity();
+        int cutter_instance_idx = -1;
+        Vec3d result_center = Vec3d::Zero();
+        bool delete_input = false;
+        bool empty = false;
+        TriangleMesh mesh;
+        std::vector<uint8_t> source_faces;
+        PreviewAnnotations annotations;
+    };
+
+    struct PreviewWork
+    {
+        std::atomic<bool> cancelled{ false };
+        std::mutex mutex;
+        bool done = false;
+        bool success = false;
+        bool ambiguous_source_provenance = false;
+        Preview snapshot;
+        TriangleMesh mesh;
+        std::vector<uint8_t> source_faces;
+        std::vector<PreviewFacetData> surfaces;
+        std::optional<TriangleSelector::SavedPainting> saved_painting;
+        std::shared_ptr<const TriangleMesh> source_paint_mesh;
+        PreviewAnnotations annotations;
+        int source_filament = 1;
+        int new_face_filament = 0;
+    };
+
     bool m_enable{ false };
     MeshBooleanOperation m_operation_mode;
     MeshBooleanSelectingState m_selecting_state;
     bool m_diff_delete_input = false;
     bool m_inter_delete_input = false;
+    int m_new_face_filament = 0; // 0 inherits the target volume's base filament.
+    CutterKind m_cutter_kind = CutterKind::Mesh;
+    Vec3d m_cutter_size = Vec3d(10.0, 10.0, 10.0);
+    Vec3d m_cutter_position = Vec3d::Zero();
+    Vec3d m_cutter_rotation = Vec3d::Zero();
+    bool m_cutter_position_initialized = false;
+    bool m_snap_cutter_position = false;
+    bool m_section_view_enabled = false;
+    bool m_section_clipper_owned = false;
+    uint64_t m_cutter_revision = 0;
     VolumeInfo m_src;
     VolumeInfo m_tool;
+    std::optional<Preview> m_preview;
+    std::shared_ptr<PreviewWork> m_preview_work;
+    std::vector<PreviewSurface> m_preview_surfaces;
+    std::unique_ptr<GLModel> m_cutter_preview_model;
+    Transform3d m_cutter_preview_instance_transform = Transform3d::Identity();
+    int m_cutter_preview_instance_idx = -1;
+    std::vector<HiddenPreviewVolume> m_preview_hidden_volumes;
 
-    void generate_new_volume(bool delete_input, const TriangleMesh& mesh_result);
+    void generate_new_volume(bool delete_input, const TriangleMesh& mesh_result, PreviewAnnotations&& annotations);
+    void initialize_cutter_position();
+    TriangleMesh make_primitive_cutter_mesh() const;
+    void update_cutter_preview();
+    void render_cutter_preview();
+    bool create_preview(const std::string& operation, bool delete_input);
+    void finish_preview(Preview preview, TriangleMesh mesh, std::vector<uint8_t> source_faces,
+                        std::vector<PreviewFacetData> surfaces);
+    void poll_preview_work();
+    void cancel_preview_work();
+    bool preview_is_current() const;
+    void apply_preview();
+    void clear_preview();
+    void hide_preview_inputs();
+    void restore_preview_inputs();
+    void render_preview();
 };
 
 } // namespace GUI

@@ -9,6 +9,8 @@
 
 #include <boost/log/trivial.hpp>
 
+#include <algorithm>
+
 namespace Slic3r {
 
 using namespace Geometry;
@@ -45,7 +47,9 @@ static void apply_tolerance(ModelVolume* vol)
     vol->set_offset(vol->get_offset() + rot_norm * z_offset);
 }
 
-static void add_cut_volume(TriangleMesh& mesh, ModelObject* object, const ModelVolume* src_volume, const Transform3d& cut_matrix, const std::string& suffix = {}, ModelVolumeType type = ModelVolumeType::MODEL_PART)
+static void add_cut_volume(TriangleMesh& mesh, ModelObject* object, const ModelVolume* src_volume, const Transform3d& cut_matrix,
+                           const std::string& suffix = {}, ModelVolumeType type = ModelVolumeType::MODEL_PART,
+                           const std::vector<uint8_t>* cap_faces = nullptr)
 {
     if (mesh.empty())
         return;
@@ -64,10 +68,12 @@ static void add_cut_volume(TriangleMesh& mesh, ModelObject* object, const ModelV
     else if (!src_volume->material_id().empty())
         vol->set_material_id(src_volume->material_id());
     vol->cut_info = src_volume->cut_info;
+    vol->cut_info.cap_faces = cap_faces ? *cap_faces : std::vector<uint8_t>();
 }
 
 static void process_volume_cut( ModelVolume* volume, const Transform3d& instance_matrix, const Transform3d& cut_matrix,
-                                ModelObjectCutAttributes attributes, TriangleMesh& upper_mesh, TriangleMesh& lower_mesh)
+                                ModelObjectCutAttributes attributes, TriangleMesh& upper_mesh, TriangleMesh& lower_mesh,
+                                std::vector<uint8_t>* upper_cap_faces = nullptr, std::vector<uint8_t>* lower_cap_faces = nullptr)
 {
     const auto volume_matrix = volume->get_matrix();
 
@@ -80,7 +86,7 @@ static void process_volume_cut( ModelVolume* volume, const Transform3d& instance
     mesh.transform(invert_cut_matrix * instance_matrix * volume_matrix, true);
 
     indexed_triangle_set upper_its, lower_its;
-    cut_mesh(mesh.its, 0.0f, &upper_its, &lower_its);
+    cut_mesh(mesh.its, 0.0f, &upper_its, &lower_its, true, upper_cap_faces, lower_cap_faces);
     if (attributes.has(ModelObjectCutAttribute::KeepUpper))
         upper_mesh = TriangleMesh(upper_its);
     if (attributes.has(ModelObjectCutAttribute::KeepLower))
@@ -186,24 +192,25 @@ static void process_solid_part_cut(ModelVolume* volume, const Transform3d& insta
 {
     // Perform cut
     TriangleMesh upper_mesh, lower_mesh;
-    process_volume_cut(volume, instance_matrix, cut_matrix, attributes, upper_mesh, lower_mesh);
+    std::vector<uint8_t> upper_cap_faces, lower_cap_faces;
+    process_volume_cut(volume, instance_matrix, cut_matrix, attributes, upper_mesh, lower_mesh, &upper_cap_faces, &lower_cap_faces);
 
     // Add required cut parts to the objects
 
     if (attributes.has(ModelObjectCutAttribute::KeepAsParts)) {
-        add_cut_volume(upper_mesh, upper, volume, cut_matrix, "_A");
+        add_cut_volume(upper_mesh, upper, volume, cut_matrix, "_A", ModelVolumeType::MODEL_PART, &upper_cap_faces);
         if (!lower_mesh.empty()) {
-            add_cut_volume(lower_mesh, upper, volume, cut_matrix, "_B");
+            add_cut_volume(lower_mesh, upper, volume, cut_matrix, "_B", ModelVolumeType::MODEL_PART, &lower_cap_faces);
             upper->volumes.back()->cut_info.is_from_upper = false;
         }
         return;
     }
 
     if (attributes.has(ModelObjectCutAttribute::KeepUpper))
-        add_cut_volume(upper_mesh, upper, volume, cut_matrix);
+        add_cut_volume(upper_mesh, upper, volume, cut_matrix, {}, ModelVolumeType::MODEL_PART, &upper_cap_faces);
 
     if (attributes.has(ModelObjectCutAttribute::KeepLower) && !lower_mesh.empty())
-        add_cut_volume(lower_mesh, lower, volume, cut_matrix);
+        add_cut_volume(lower_mesh, lower, volume, cut_matrix, {}, ModelVolumeType::MODEL_PART, &lower_cap_faces);
 }
 
 static void reset_instance_transformation(ModelObject* object, size_t src_instance_idx, 
@@ -252,8 +259,14 @@ Cut::Cut(const ModelObject* object, int instance, const Transform3d& cut_matrix,
     : m_instance(instance), m_cut_matrix(cut_matrix), m_attributes(attributes)
 {
     m_model = Model();
-    if (object)
+    if (object) {
         m_model.add_object(*object);
+        ModelObject* cut_object = m_model.objects.front();
+        const size_t volume_count = std::min(object->volumes.size(), cut_object->volumes.size());
+        for (size_t volume_idx = 0; volume_idx < volume_count; ++volume_idx)
+            if (cut_object->volumes[volume_idx]->cut_info.painting_source_ids.empty())
+                cut_object->volumes[volume_idx]->cut_info.painting_source_ids = {object->volumes[volume_idx]->id()};
+    }
 }
 
 void Cut::post_process(ModelObject* object, ModelObjectPtrs& cut_object_ptrs, bool keep, bool place_on_cut, bool flip)
@@ -282,18 +295,50 @@ void Cut::post_process(ModelObject* upper, ModelObject* lower, ModelObjectPtrs& 
 }
 
 
-void Cut::finalize(const ModelObjectPtrs& objects, const std::vector<std::optional<TriangleSelector::SavedPainting>>& saved_paintings)
+void Cut::finalize(const ModelObjectPtrs& objects, const std::vector<SavedVolumePainting>& saved_paintings)
 {
-    // A contour or groove cut may merge several source volumes into one target.
-    // Accumulate every source painting on final solid parts, never on connectors or cut caps.
-    for (const auto& saved_painting : saved_paintings) {
-        if (!saved_painting)
+    // Restrict restoration to descendants of the source volume. Coincident parts
+    // must never donate paint to one another through a global nearest-surface map.
+    for (const SavedVolumePainting& saved : saved_paintings) {
+        if (!saved.painting)
             continue;
         for (ModelObject* object : objects)
             for (ModelVolume* volume : object->volumes)
-                if (volume->is_model_part() && !volume->is_cut_connector())
-                    volume->restore_painting(saved_painting, true);
+                if (volume->is_model_part() && !volume->is_cut_connector() &&
+                    std::find(volume->cut_info.painting_source_ids.begin(), volume->cut_info.painting_source_ids.end(),
+                              saved.source_volume_id) != volume->cut_info.painting_source_ids.end())
+                    volume->restore_painting(saved.painting, true);
     }
+
+    const EnforcerBlockerType cap_state = m_new_face_filament > 0 ? static_cast<EnforcerBlockerType>(m_new_face_filament) :
+                                                                    EnforcerBlockerType::NONE;
+    for (ModelObject* object : objects)
+        for (ModelVolume* volume : object->volumes) {
+            const std::vector<uint8_t>& cap_faces = volume->cut_info.cap_faces;
+            if (cap_faces.empty() || std::none_of(cap_faces.begin(), cap_faces.end(), [](uint8_t is_cap) { return is_cap != 0; }))
+                continue;
+            const auto update_annotation = [&](FacetsAnnotation& annotation, EnforcerBlockerType state) {
+                TriangleSelector selector(volume->mesh());
+                if (!annotation.empty())
+                    selector.deserialize(annotation.get_data(), false, EnforcerBlockerType::ExtruderMax);
+                for (size_t face = 0; face < std::min(cap_faces.size(), volume->mesh().its.indices.size()); ++face)
+                    if (cap_faces[face])
+                        selector.set_facet(static_cast<int>(face), state);
+                annotation.set(selector);
+            };
+            update_annotation(volume->mmu_segmentation_facets, cap_state);
+            update_annotation(volume->supported_facets, EnforcerBlockerType::NONE);
+            update_annotation(volume->seam_facets, EnforcerBlockerType::NONE);
+            update_annotation(volume->fuzzy_skin_facets, EnforcerBlockerType::NONE);
+        }
+
+    if (!saved_paintings.empty())
+        for (ModelObject* object : objects)
+            for (ModelVolume* volume : object->volumes)
+                volume->cut_info.painting_source_ids.clear();
+    for (ModelObject* object : objects)
+        for (ModelVolume* volume : object->volumes)
+            volume->cut_info.cap_faces.clear();
 
     // Clear model from temporary objects.
     m_model.clear_objects();
@@ -334,12 +379,14 @@ const ModelObjectPtrs& Cut::perform_with_plane()
     const Transformation    cut_transformation = Transformation(m_cut_matrix);
     const Transform3d       inverse_cut_matrix = cut_transformation.get_rotation_matrix().inverse() * translation_transform(-1. * cut_transformation.get_offset());
 
-    std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings;
+    std::vector<SavedVolumePainting> saved_paintings;
     for (ModelVolume* volume : mo->volumes) {
+        if (m_attributes.has(ModelObjectCutAttribute::KeepPaint) || volume->cut_info.painting_source_ids.empty())
+            volume->cut_info.painting_source_ids = {volume->id()};
         if (m_attributes.has(ModelObjectCutAttribute::KeepPaint)) {
-            saved_paintings.emplace_back(volume->save_painting());
-            if (saved_paintings.back())
-                saved_paintings.back()->transform = instance_matrix * volume->get_matrix();
+            saved_paintings.push_back({volume->id(), volume->save_painting()});
+            if (saved_paintings.back().painting)
+                saved_paintings.back().painting->transform = instance_matrix * volume->get_matrix();
         }
 
         volume->reset_extra_facets();
@@ -431,6 +478,8 @@ static void merge_solid_parts_inside_object(ModelObjectPtrs& objects)
         {
             const ModelVolume* source;
             TriangleMesh       mesh;
+            std::vector<ObjectID> source_ids;
+            std::vector<uint8_t> cap_faces;
         };
         std::vector<MergeGroup> groups;
         const size_t            original_volume_count = mo->volumes.size();
@@ -440,16 +489,31 @@ static void merge_solid_parts_inside_object(ModelObjectPtrs& objects)
             if (!mv->is_model_part() || mv->is_cut_connector() || mv->mesh().empty())
                 continue;
 
-            auto group = std::find_if(groups.begin(), groups.end(), [mv](const MergeGroup& candidate) {
-                return candidate.source->config.get() == mv->config.get() && candidate.source->material_id() == mv->material_id();
-            });
-            if (group == groups.end()) {
-                groups.push_back({mv, TriangleMesh()});
-                group = std::prev(groups.end());
-            }
-
             TriangleMesh mesh = mv->mesh();
             mesh.transform(mv->get_matrix());
+            auto group = std::find_if(groups.begin(), groups.end(), [&](const MergeGroup& candidate) {
+                if (candidate.source->config.get() != mv->config.get() || candidate.source->material_id() != mv->material_id())
+                    return false;
+                const bool same_owner = std::any_of(mv->cut_info.painting_source_ids.begin(), mv->cut_info.painting_source_ids.end(),
+                                                   [&](ObjectID id) {
+                    return std::find(candidate.source_ids.begin(), candidate.source_ids.end(), id) != candidate.source_ids.end();
+                });
+                // Keep overlapping source volumes separate so their annotations cannot
+                // compete on coincident output faces. Disjoint volumes may still merge.
+                return same_owner || !candidate.mesh.bounding_box().intersects(mesh.bounding_box());
+            });
+            if (group == groups.end()) {
+                groups.push_back({mv, TriangleMesh(), mv->cut_info.painting_source_ids, {}});
+                group = std::prev(groups.end());
+            } else {
+                for (ObjectID id : mv->cut_info.painting_source_ids)
+                    if (std::find(group->source_ids.begin(), group->source_ids.end(), id) == group->source_ids.end())
+                        group->source_ids.push_back(id);
+            }
+            if (mv->cut_info.cap_faces.size() == mv->mesh().its.indices.size())
+                group->cap_faces.insert(group->cap_faces.end(), mv->cut_info.cap_faces.begin(), mv->cut_info.cap_faces.end());
+            else
+                group->cap_faces.insert(group->cap_faces.end(), mv->mesh().its.indices.size(), 0);
             group->mesh.merge(mesh);
         }
         if (groups.empty())
@@ -461,6 +525,9 @@ static void merge_solid_parts_inside_object(ModelObjectPtrs& objects)
             ModelVolume* new_volume = mo->add_volume(std::move(group.mesh));
             new_volume->name        = groups.size() == 1 ? mo->name : group.source->name;
             new_volume->config.assign_config(group.source->config);
+            new_volume->cut_info = group.source->cut_info;
+            new_volume->cut_info.painting_source_ids = group.source_ids;
+            new_volume->cut_info.cap_faces = group.cap_faces;
             assert(new_volume->config.id() != group.source->config.id());
             if (const ModelMaterial* material = group.source->material())
                 new_volume->set_material(group.source->material_id(), *material);
@@ -496,13 +563,17 @@ const ModelObjectPtrs& Cut::perform_by_contour(const ModelObject* src_object, st
 
     // Part selection uses a temporary, already-split object. Preserve paint from
     // the original object so cuts with connectors can restore it after merging.
-    std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings;
+    std::vector<SavedVolumePainting> saved_paintings;
     if (m_attributes.has(ModelObjectCutAttribute::KeepPaint)) {
         const Transform3d instance_matrix = src_object->instances[m_instance]->get_transformation().get_matrix_no_offset();
+        const size_t source_count = std::min(src_object->volumes.size(), cut_mo->volumes.size());
+        for (size_t id = 0; id < source_count; ++id)
+            if (cut_mo->volumes[id]->cut_info.painting_source_ids.empty())
+                cut_mo->volumes[id]->cut_info.painting_source_ids = {src_object->volumes[id]->id()};
         for (const ModelVolume* volume : src_object->volumes) {
-            saved_paintings.emplace_back(volume->save_painting());
-            if (saved_paintings.back())
-                saved_paintings.back()->transform = instance_matrix * volume->get_matrix();
+            saved_paintings.push_back({volume->id(), volume->save_painting()});
+            if (saved_paintings.back().painting)
+                saved_paintings.back().painting->transform = instance_matrix * volume->get_matrix();
         }
     }
 
@@ -592,13 +663,14 @@ const ModelObjectPtrs& Cut::perform_with_groove(const Groove& groove, const Tran
         lower->name = lower->name + "_B";
     }
 
-    std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings;
+    std::vector<SavedVolumePainting> saved_paintings;
     if (m_attributes.has(ModelObjectCutAttribute::KeepPaint)) {
         const Transform3d instance_matrix = cut_mo->instances[m_instance]->get_transformation().get_matrix_no_offset();
-        for (const ModelVolume* volume : cut_mo->volumes) {
-            saved_paintings.emplace_back(volume->save_painting());
-            if (saved_paintings.back())
-                saved_paintings.back()->transform = instance_matrix * volume->get_matrix();
+        for (ModelVolume* volume : cut_mo->volumes) {
+            volume->cut_info.painting_source_ids = {volume->id()};
+            saved_paintings.push_back({volume->id(), volume->save_painting()});
+            if (saved_paintings.back().painting)
+                saved_paintings.back().painting->transform = instance_matrix * volume->get_matrix();
         }
     }
     const double groove_half_depth = 0.5 * double(groove.depth);

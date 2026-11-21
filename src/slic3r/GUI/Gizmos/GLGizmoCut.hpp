@@ -117,6 +117,7 @@ class GLGizmoCut3D : public GLGizmoBase
     bool m_place_on_cut_lower{ false };
     bool m_rotate_upper{ false };
     bool m_rotate_lower{ false };
+    int  m_new_face_filament{ 0 }; // 0 inherits the part's default filament.
 
     // Input params for cut with tongue and groove
     Cut::Groove m_groove;

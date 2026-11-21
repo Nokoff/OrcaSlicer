@@ -620,7 +620,11 @@ void GLGizmoCut3D::render_move_center_input(int axis)
     double in_val, value = in_val = move[axis];
     if (m_imperial_units)
         value *= GizmoObjectManipulation::mm_to_in;
-    ImGui::InputDouble(("##move_" + m_axis_names[axis]).c_str(), &value, 0.0, 0.0, "%.2f", ImGuiInputTextFlags_CharsDecimal);
+    const double fine_step = m_imperial_units ? 0.01 * GizmoObjectManipulation::mm_to_in : 0.01;
+    const double fast_step = m_imperial_units ? 0.1 * GizmoObjectManipulation::mm_to_in : 0.1;
+    const char* format = m_imperial_units ? "%.4f" : "%.2f";
+    ImGui::InputDouble(("##move_" + m_axis_names[axis]).c_str(), &value, fine_step, fast_step, format,
+                       ImGuiInputTextFlags_CharsDecimal);
     ImGui::SameLine();
 
     double val = value * (m_imperial_units ? GizmoObjectManipulation::in_to_mm : 1.0);
@@ -2653,7 +2657,32 @@ void GLGizmoCut3D::render_cut_plane_input_window(CutConnectors &connectors, floa
         m_imgui->text(_L("Cut position") + ": ");
         ImGui::SameLine();
         render_move_center_input(Z);
-        ImGui::SameLine();
+
+        if (mode == CutMode::cutPlanar) {
+            ImGui::NewLine();
+            int filament_count = 1;
+            if (wxGetApp().preset_bundle) {
+                const ConfigOptionStrings* filament_colours = wxGetApp().preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
+                if (filament_colours)
+                    filament_count = std::max(1, int(filament_colours->values.size()));
+            }
+            m_new_face_filament = std::min(m_new_face_filament, filament_count);
+            const std::string cap_label = m_new_face_filament == 0 ? _u8L("Part default") :
+                _u8L("Filament") + " " + std::to_string(m_new_face_filament);
+            if (ImGui::BeginCombo(_u8L("Cut cap filament").c_str(), cap_label.c_str())) {
+                if (ImGui::Selectable(_u8L("Part default").c_str(), m_new_face_filament == 0))
+                    m_new_face_filament = 0;
+                for (int filament = 1; filament <= filament_count; ++filament) {
+                    const std::string label = _u8L("Filament") + " " + std::to_string(filament);
+                    if (ImGui::Selectable(label.c_str(), m_new_face_filament == filament))
+                        m_new_face_filament = filament;
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::NewLine();
+        } else {
+            ImGui::SameLine();
+        }
 
         const bool is_cut_plane_init = m_rotation_m.isApprox(Transform3d::Identity()) && m_bb_center.isApprox(m_plane_center);
         m_imgui->disabled_begin(is_cut_plane_init);
@@ -3360,6 +3389,8 @@ void GLGizmoCut3D::perform_cut(const Selection& selection)
         update_object_cut_id(cut_mo->cut_id, attributes, dowels_count);
 
         Cut cut(cut_mo, instance_idx, get_cut_matrix(selection), attributes);
+        if (!cut_with_groove && !cut_by_contour)
+            cut.set_new_face_filament(m_new_face_filament);
         const ModelObjectPtrs& new_objects = cut_by_contour    ? cut.perform_by_contour(mo, m_part_selection.get_cut_parts(), dowels_count):
                                              cut_with_groove   ? cut.perform_with_groove(m_groove, m_rotation_m) :
                                                                  cut.perform_with_plane();

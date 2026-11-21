@@ -2,6 +2,7 @@
 #define slic3r_TriangleMeshSlicer_hpp_
 
 #include <functional>
+#include <cstdint>
 #include <vector>
 #include "Polygon.hpp"
 #include "ExPolygon.hpp"
@@ -134,7 +135,9 @@ void cut_mesh(
     float                            z,
     indexed_triangle_set            *upper,
     indexed_triangle_set            *lower,
-    bool                             triangulate_caps = true);
+    bool                             triangulate_caps = true,
+    std::vector<uint8_t>*            upper_cap_faces = nullptr,
+    std::vector<uint8_t>*            lower_cap_faces = nullptr);
 
 } // namespace Slic3r
 
