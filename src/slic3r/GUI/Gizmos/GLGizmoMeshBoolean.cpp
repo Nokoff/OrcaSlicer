@@ -43,8 +43,23 @@ GLGizmoMeshBoolean::~GLGizmoMeshBoolean()
 
 bool GLGizmoMeshBoolean::gizmo_event(SLAGizmoEventType action, const Vec2d& mouse_position, bool shift_down, bool alt_down, bool control_down) 
 {
-    if (action == SLAGizmoEventType::LeftDown) {
-        const ModelObject* mo = m_c->selection_info()->model_object();
+    const bool brush_mode = m_operation_mode == MeshBooleanOperation::Difference && m_cutter_kind == CutterKind::Brush;
+    if (brush_mode && action == SLAGizmoEventType::LeftUp) {
+        if (m_brush_stroke_active) {
+            m_brush_stroke_active = false;
+            if (!control_down && m_src.mv && !m_brush_stroke_points.empty()) {
+                ++m_cutter_revision;
+                create_preview("A_NOT_B", false);
+            }
+            m_brush_stroke_points.clear();
+            m_parent.set_as_dirty();
+        }
+        return true;
+    }
+
+    if (action == SLAGizmoEventType::LeftDown ||
+        (brush_mode && action == SLAGizmoEventType::Dragging && m_brush_stroke_active)) {
+        const ModelObject* mo = m_c->selection_info() ? m_c->selection_info()->model_object() : nullptr;
         if (mo == nullptr)
             return true;
         const int instance_idx = m_parent.get_selection().get_instance_idx();
@@ -86,6 +101,27 @@ bool GLGizmoMeshBoolean::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
         if (closest_hit == Vec3f::Zero() && closest_normal == Vec3f::Zero())
             return true;
 
+        if (brush_mode) {
+            if (action == SLAGizmoEventType::LeftDown) {
+                m_brush_stroke_points.clear();
+                m_brush_stroke_active = true;
+                if (!m_src.mv || m_src.volume_idx != closest_hit_mesh_id) {
+                    m_src.trafo = mo->volumes[closest_hit_mesh_id]->get_matrix();
+                    m_src.volume_idx = closest_hit_mesh_id;
+                    set_src_volume(mo->volumes[closest_hit_mesh_id]);
+                }
+            }
+            if (!m_brush_stroke_active || !m_src.mv || closest_hit_mesh_id != m_src.volume_idx)
+                return true;
+
+            const Vec3d world_hit = trafo_matrices[closest_hit_mesh_id] * closest_hit.cast<double>();
+            const Vec3d object_hit = mi->get_matrix().inverse() * world_hit;
+            if (m_brush_stroke_points.empty() || (m_brush_stroke_points.back() - object_hit).norm() >= std::max(0.5, m_brush_radius * 0.3))
+                m_brush_stroke_points.emplace_back(object_hit);
+            m_parent.set_as_dirty();
+            return true;
+        }
+
         if (get_selecting_state() == MeshBooleanSelectingState::SelectTool) {
             m_tool.trafo = mo->volumes[closest_hit_mesh_id]->get_matrix();
             m_tool.volume_idx = closest_hit_mesh_id;
@@ -113,6 +149,19 @@ bool GLGizmoMeshBoolean::on_mouse(const wxMouseEvent &mouse_event)
     // over some object
     bool control_down           = mouse_event.CmdDown();
     bool grabber_contains_mouse = (get_hover_id() != -1);
+    const bool brush_mode = m_state == On && m_operation_mode == MeshBooleanOperation::Difference && m_cutter_kind == CutterKind::Brush;
+    if (brush_mode && mouse_event.Moving()) {
+        m_parent.set_as_dirty();
+        return false;
+    }
+    if (brush_mode && mouse_event.Dragging() && mouse_event.LeftIsDown()) {
+        if (!control_down && gizmo_event(SLAGizmoEventType::Dragging, mouse_pos, mouse_event.ShiftDown(), mouse_event.AltDown(), false))
+            return true;
+    }
+    if (brush_mode && mouse_event.LeftUp() && m_brush_stroke_active) {
+        gizmo_event(SLAGizmoEventType::LeftUp, mouse_pos, mouse_event.ShiftDown(), mouse_event.AltDown(), control_down);
+        return true;
+    }
     if (mouse_event.LeftDown()) {
         if ((!control_down || grabber_contains_mouse) &&            
             gizmo_event(SLAGizmoEventType::LeftDown, mouse_pos, mouse_event.ShiftDown(), mouse_event.AltDown(), false))
@@ -137,7 +186,7 @@ std::string GLGizmoMeshBoolean::on_get_name() const
 
 bool GLGizmoMeshBoolean::on_is_activable() const
 {
-    return m_parent.get_selection().is_single_full_instance() && m_parent.get_selection().get_volume_idxs().size() > 1;
+    return m_parent.get_selection().is_single_full_instance();
 }
 
 void GLGizmoMeshBoolean::on_render()
@@ -162,7 +211,7 @@ void GLGizmoMeshBoolean::on_render()
         m_tool.reset();
         m_cutter_position_initialized = false;
         m_cutter_preview_model.reset();
-        m_operation_mode = MeshBooleanOperation::Union;
+        m_operation_mode = MeshBooleanOperation::Difference;
         m_selecting_state = MeshBooleanSelectingState::SelectSource;
         return;
     }
@@ -212,17 +261,21 @@ void GLGizmoMeshBoolean::on_render()
         clear_preview();
     if (m_preview)
         render_preview();
-    else if (m_operation_mode == MeshBooleanOperation::Difference && m_cutter_kind != CutterKind::Mesh) {
+    else if (m_operation_mode == MeshBooleanOperation::Difference && m_cutter_kind != CutterKind::Mesh && m_cutter_kind != CutterKind::Brush) {
         if (!m_cutter_preview_model)
             update_cutter_preview();
         render_cutter_preview();
     }
+    if (m_operation_mode == MeshBooleanOperation::Difference && m_cutter_kind == CutterKind::Brush)
+        render_brush_cursor();
 }
 
 void GLGizmoMeshBoolean::on_set_state()
 {
     if (m_state == EState::On) {
         clear_preview();
+        m_brush_stroke_active = false;
+        m_brush_stroke_points.clear();
         m_src.reset();
         m_tool.reset();
         m_cutter_position_initialized = false;
@@ -230,11 +283,13 @@ void GLGizmoMeshBoolean::on_set_state()
         m_section_clipper_owned = false;
         m_diff_delete_input = false;
         m_inter_delete_input = false;
-        m_operation_mode = MeshBooleanOperation::Union;
+        m_operation_mode = MeshBooleanOperation::Difference;
         m_selecting_state = MeshBooleanSelectingState::SelectSource;
     }
     else if (m_state == EState::Off) {
         clear_preview();
+        m_brush_stroke_active = false;
+        m_brush_stroke_points.clear();
         if (m_section_clipper_owned && m_c)
             m_c->object_clipper()->release();
         m_section_view_enabled = false;
@@ -361,7 +416,8 @@ void GLGizmoMeshBoolean::on_render_input_window(float x, float y, float bottom_l
     std::string cap_str1 = m_operation_mode != MeshBooleanOperation::Difference ? _u8L("Part 1") : _u8L("Subtract from");
     m_imgui->text(cap_str1);
     ImGui::SameLine(max_cap_length);
-    std::string select_src_str = m_src.mv ? "1 " + _u8L("selected") : _u8L("Select");
+    std::string select_src_str = m_src.mv ? "1 " + _u8L("selected") :
+        (m_cutter_kind == CutterKind::Brush ? _u8L("Auto on stroke") : _u8L("Select"));
     select_src_str += "##select_source_volume";
     ImGui::PushItemWidth(select_btn_length);
     if (selectable(select_src_str, m_selecting_state == MeshBooleanSelectingState::SelectSource, ImVec2(select_btn_length, 0)))
@@ -387,12 +443,14 @@ void GLGizmoMeshBoolean::on_render_input_window(float x, float y, float bottom_l
     }
 
     if (m_operation_mode == MeshBooleanOperation::Difference) {
-        const char* cutter_names[] = { "Mesh", "Box", "Cylinder", "Sphere" };
+        const char* cutter_names[] = { "Mesh", "Box", "Cylinder", "Sphere", "Brush" };
         const char* cutter_name = cutter_names[static_cast<int>(m_cutter_kind)];
         if (ImGui::BeginCombo(_u8L("Cutter type").c_str(), _u8L(cutter_name).c_str())) {
-            for (int i = 0; i < 4; ++i) {
+            for (int i = 0; i < 5; ++i) {
                 if (ImGui::Selectable(_u8L(cutter_names[i]).c_str(), static_cast<int>(m_cutter_kind) == i)) {
                     m_cutter_kind = static_cast<CutterKind>(i);
+                    m_brush_stroke_active = false;
+                    m_brush_stroke_points.clear();
                     if (m_cutter_kind == CutterKind::Mesh)
                         m_selecting_state = m_tool.mv ? MeshBooleanSelectingState::Undef : MeshBooleanSelectingState::SelectTool;
                     else
@@ -435,6 +493,19 @@ void GLGizmoMeshBoolean::on_render_input_window(float x, float y, float bottom_l
             }
             ImGui::PopStyleColor(5);
         }
+    } else if (m_cutter_kind == CutterKind::Brush) {
+        const double min_radius = 0.25;
+        const double max_radius = 100.0;
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::DragScalar(_u8L("Brush radius (mm)").c_str(), ImGuiDataType_Double, &m_brush_radius,
+                              0.1f, &min_radius, &max_radius, "%.2f", ImGuiSliderFlags_AlwaysClamp)) {
+            m_brush_radius = std::clamp(m_brush_radius, min_radius, max_radius);
+            ++m_cutter_revision;
+            clear_preview();
+        }
+        m_imgui->text(_L("The first stroke selects the part under the brush."));
+        m_imgui->text(_L("Click and drag over the model to paint a subtract stroke."));
+        m_imgui->text(_L("Release the mouse to preview the cut."));
     } else {
         bool cutter_changed = false;
         auto input_mm = [&cutter_changed](const char* label, double& value) {
@@ -564,6 +635,8 @@ void GLGizmoMeshBoolean::on_render_input_window(float x, float y, float bottom_l
     } else if (m_operation_mode == MeshBooleanOperation::Union) {
         if (operate_button(_L("Preview union") + "##btn", enable_button))
             create_preview("UNION", true);
+    } else if (m_operation_mode == MeshBooleanOperation::Difference && m_cutter_kind == CutterKind::Brush) {
+        m_imgui->text(_L("Paint a stroke on the model to create a cut preview."));
     } else if (m_operation_mode == MeshBooleanOperation::Difference) {
         if (operate_button(_L("Preview difference") + "##btn", enable_button))
             create_preview("A_NOT_B", m_cutter_kind == CutterKind::Mesh && m_diff_delete_input);
@@ -845,6 +918,8 @@ TriangleMesh GLGizmoMeshBoolean::make_primitive_cutter_mesh() const
         break;
     case CutterKind::Mesh:
         return mesh;
+    case CutterKind::Brush:
+        return make_brush_cutter_mesh();
     }
 
     const Eigen::Matrix3d rotation =
@@ -864,6 +939,78 @@ TriangleMesh GLGizmoMeshBoolean::make_primitive_cutter_mesh() const
     const Transform3d transform = instance_transform.inverse() * world_transform;
     mesh.transform(transform, true);
     return mesh;
+}
+
+TriangleMesh GLGizmoMeshBoolean::make_brush_cutter_mesh() const
+{
+    if (m_brush_stroke_points.empty() || !(m_brush_radius > 0.0))
+        return TriangleMesh();
+
+    // A single click makes a rounded scoop. A drag creates one closed tube
+    // along the stroke, so the Boolean sees one watertight cutter instead of
+    // many intersecting spheres.
+    if (m_brush_stroke_points.size() == 1) {
+        TriangleMesh sphere = make_sphere(m_brush_radius, PI / 24.0);
+        sphere.translate(m_brush_stroke_points.front().cast<float>());
+        return sphere;
+    }
+
+    std::vector<Vec3d> path;
+    path.emplace_back(m_brush_stroke_points.front());
+    const double sample_step = std::max(0.5, m_brush_radius * 0.45);
+    for (size_t i = 1; i < m_brush_stroke_points.size(); ++i) {
+        const Vec3d delta = m_brush_stroke_points[i] - m_brush_stroke_points[i - 1];
+        const double length = delta.norm();
+        const int steps = std::max(1, int(std::ceil(length / sample_step)));
+        for (int step = 1; step <= steps; ++step)
+            path.emplace_back(m_brush_stroke_points[i - 1] + delta * (double(step) / steps));
+    }
+
+    constexpr int ring_segments = 16;
+    indexed_triangle_set its;
+    its.vertices.reserve(path.size() * ring_segments + 2);
+    its.indices.reserve((path.size() - 1) * ring_segments * 2 + ring_segments * 2);
+    std::vector<Vec3d> frame_u(path.size()), frame_v(path.size());
+    for (size_t i = 0; i < path.size(); ++i) {
+        Vec3d tangent = i == 0 ? path[1] - path[0] :
+            i + 1 == path.size() ? path[i] - path[i - 1] : path[i + 1] - path[i - 1];
+        if (tangent.squaredNorm() < 1e-12)
+            tangent = Vec3d::UnitZ();
+        tangent.normalize();
+        const Vec3d reference = std::abs(tangent.z()) < 0.9 ? Vec3d::UnitZ() : Vec3d::UnitY();
+        frame_u[i] = tangent.cross(reference).normalized();
+        frame_v[i] = tangent.cross(frame_u[i]).normalized();
+        for (int j = 0; j < ring_segments; ++j) {
+            const double angle = 2.0 * PI * double(j) / ring_segments;
+            const Vec3d point = path[i] + m_brush_radius *
+                (std::cos(angle) * frame_u[i] + std::sin(angle) * frame_v[i]);
+            its.vertices.emplace_back(point.cast<float>());
+        }
+    }
+
+    for (size_t i = 0; i + 1 < path.size(); ++i) {
+        for (int j = 0; j < ring_segments; ++j) {
+            const int next = (j + 1) % ring_segments;
+            const int a = int(i * ring_segments) + j;
+            const int b = int(i * ring_segments) + next;
+            const int c = int((i + 1) * ring_segments) + next;
+            const int d = int((i + 1) * ring_segments) + j;
+            its.indices.emplace_back(a, b, c);
+            its.indices.emplace_back(a, c, d);
+        }
+    }
+
+    const int start_center = int(its.vertices.size());
+    its.vertices.emplace_back(path.front().cast<float>());
+    const int end_center = int(its.vertices.size());
+    its.vertices.emplace_back(path.back().cast<float>());
+    const int end_ring = int((path.size() - 1) * ring_segments);
+    for (int j = 0; j < ring_segments; ++j) {
+        const int next = (j + 1) % ring_segments;
+        its.indices.emplace_back(start_center, next, j);
+        its.indices.emplace_back(end_center, end_ring + j, end_ring + next);
+    }
+    return TriangleMesh(std::move(its));
 }
 
 void GLGizmoMeshBoolean::initialize_cutter_position()
@@ -891,7 +1038,7 @@ void GLGizmoMeshBoolean::update_cutter_preview()
 {
     m_cutter_preview_model.reset();
     m_cutter_preview_instance_idx = -1;
-    if (m_operation_mode != MeshBooleanOperation::Difference || m_cutter_kind == CutterKind::Mesh)
+    if (m_operation_mode != MeshBooleanOperation::Difference || m_cutter_kind == CutterKind::Mesh || m_cutter_kind == CutterKind::Brush)
         return;
     const int instance_idx = m_parent.get_selection().get_instance_idx();
     const ModelObject* object = m_c->selection_info() ? m_c->selection_info()->model_object() : nullptr;
@@ -909,7 +1056,7 @@ void GLGizmoMeshBoolean::update_cutter_preview()
 
 void GLGizmoMeshBoolean::render_cutter_preview()
 {
-    if (!m_src.mv)
+    if (!m_src.mv || m_cutter_kind == CutterKind::Brush)
         return;
     const int instance_idx = m_parent.get_selection().get_instance_idx();
     const ModelObject* object = m_c->selection_info() ? m_c->selection_info()->model_object() : nullptr;
@@ -942,6 +1089,52 @@ void GLGizmoMeshBoolean::render_cutter_preview()
     glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
     glsafe(::glDisable(GL_BLEND));
     shader->stop_using();
+}
+
+void GLGizmoMeshBoolean::render_brush_cursor()
+{
+    const Size canvas_size = m_parent.get_canvas_size();
+    const float width = float(canvas_size.get_width());
+    const float height = float(canvas_size.get_height());
+    if (width <= 0.0f || height <= 0.0f)
+        return;
+
+    const Vec2d center = m_parent.get_local_mouse_position();
+    const float radius = float(m_brush_radius * wxGetApp().plater()->get_camera().get_zoom());
+    if (!m_brush_cursor_circle.is_initialized() || !m_brush_cursor_center.isApprox(center) ||
+        std::abs(m_brush_cursor_screen_radius - radius) > EPSILON) {
+        m_brush_cursor_center = center;
+        m_brush_cursor_screen_radius = radius;
+        m_brush_cursor_circle.reset();
+
+        GLModel::Geometry geometry;
+        constexpr unsigned int steps = 48;
+        const float step_angle = 2.0f * float(PI) / float(steps);
+        geometry.format = { GLModel::Geometry::EPrimitiveType::LineLoop, GLModel::Geometry::EVertexLayout::P2 };
+        geometry.color = { 0.0f, 0.8f, 0.72f, 1.0f };
+        geometry.reserve_vertices(steps);
+        geometry.reserve_indices(steps);
+        for (unsigned int i = 0; i < steps; ++i) {
+            const float angle = float(i) * step_angle;
+            geometry.add_vertex(Vec2f(2.0f * ((float(center.x()) + std::cos(angle) * radius) / width - 0.5f),
+                                      -2.0f * ((float(center.y()) + std::sin(angle) * radius) / height - 0.5f)));
+            geometry.add_index(i);
+        }
+        m_brush_cursor_circle.init_from(std::move(geometry));
+    }
+
+    glsafe(::glDisable(GL_DEPTH_TEST));
+    GLShaderProgram* shader = wxGetApp().get_shader("flat");
+    if (shader) {
+        shader->start_using();
+        shader->set_uniform("view_model_matrix", Transform3d::Identity());
+        shader->set_uniform("projection_matrix", Transform3d::Identity());
+        m_brush_cursor_circle.set_color(m_brush_stroke_active ? ColorRGBA(1.0f, 0.35f, 0.2f, 1.0f) :
+                                                                ColorRGBA(0.0f, 0.8f, 0.72f, 1.0f));
+        m_brush_cursor_circle.render();
+        shader->stop_using();
+    }
+    glsafe(::glEnable(GL_DEPTH_TEST));
 }
 
 bool GLGizmoMeshBoolean::preview_is_current() const

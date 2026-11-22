@@ -105,6 +105,14 @@ function UpdateMyFileThumbnail(path, image)
 			img.attr('onerror', "this.onerror=null;this.src='../homepage/img/d.png';");
 			img.attr('src', image);
 		}
+		if ($(this).hasClass('FolderItem') && $(this).attr('fpreview') === path) {
+			var preview = $(this).find('.FolderPreview');
+			if (preview.length <= 0) {
+				$(this).find('.FileImg').html('<div class="FolderGlyph"></div><img class="FolderPreview" onerror="this.style.display=\'none\';" alt="" />');
+				preview = $(this).find('.FolderPreview');
+			}
+			preview.attr('src', image).show();
+		}
 	});
 }
 
@@ -537,9 +545,13 @@ function RenderMyFilesList()
 		var sName = OneFile['project_name'];
 
 		if (OneFile['is_dir']) {
-			strHtml += '<div class="FileItem FolderItem" fpath="' + EscapeHtml(sPath) + '" frel="' + EscapeHtml(OneFile['rel'] || '') + '">' +
+			var folderImage = OneFile['image'] || sImages[OneFile['preview_path']] || '';
+			if (OneFile['preview_path'] && folderImage)
+				sImages[OneFile['preview_path']] = folderImage;
+			strHtml += '<div class="FileItem FolderItem" fpath="' + EscapeHtml(sPath) + '" frel="' + EscapeHtml(OneFile['rel'] || '') + '" fpreview="' + EscapeHtml(OneFile['preview_path'] || '') + '">' +
 				'<a class="FileTip" title="' + EscapeHtml(sPath) + '"></a>' +
-				'<div class="FileImg FolderImg"><div class="FolderGlyph"></div></div>' +
+				'<div class="FileImg FolderImg"><div class="FolderGlyph"></div>' +
+				(folderImage ? '<img class="FolderPreview" src="' + EscapeHtml(folderImage) + '" onerror="this.style.display=\'none\';" alt="" />' : '') + '</div>' +
 				'<div class="FileName TextS1">' + EscapeHtml(sName) + '</div>' +
 				'<div class="FileDate">' + EscapeHtml(FolderSummary(OneFile)) + '</div>' +
 				'</div>';

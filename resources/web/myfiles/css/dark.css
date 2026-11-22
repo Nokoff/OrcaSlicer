@@ -28,6 +28,10 @@
 	background-color: #3E3E45;
 }
 
+.FolderPreview {
+	background-color: rgba(53, 53, 59, 0.84);
+}
+
 .MyFilesActionBtn {
 	border-color: #3E3E45;
 }

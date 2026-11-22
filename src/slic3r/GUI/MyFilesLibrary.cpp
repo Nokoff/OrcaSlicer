@@ -468,7 +468,9 @@ struct FileEntry {
 
 struct FolderEntry {
     fs::path    path;
+    fs::path    preview_path;
     std::time_t mtime{0};
+    std::time_t preview_mtime{0};
     int         file_count{0};
     int         folder_count{0};
 };
@@ -520,6 +522,54 @@ void count_folder_contents(const fs::path &dir, int &files, int &folders)
     }
 }
 
+// Find a recent 3MF/STL below a folder for its tile preview. Keep the walk bounded and do not
+// follow symlinked directories, matching the safeguards used by the recursive file listing.
+void find_folder_preview(const fs::path &dir, int depth, int &scanned, fs::path &preview,
+                         std::time_t &preview_mtime)
+{
+    if (depth > k_max_depth || scanned >= k_max_count_scan)
+        return;
+
+    boost::system::error_code ec;
+    fs::directory_iterator it(dir, ec), end;
+    if (ec)
+        return;
+
+    std::vector<fs::path> subdirs;
+    for (; it != end && scanned < k_max_count_scan; it.increment(ec), ++scanned) {
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        const fs::path &p = it->path();
+        if (is_hidden_name(p))
+            continue;
+
+        boost::system::error_code status_ec;
+        if (fs::is_directory(p, status_ec)) {
+            if (!status_ec && !fs::is_symlink(p, status_ec) && !status_ec)
+                subdirs.push_back(p);
+            continue;
+        }
+
+        const std::string ext = lower_extension(p.string());
+        if (ext != ".3mf" && ext != ".stl")
+            continue;
+        const std::time_t mtime = last_write_time_or_zero(p);
+        if (mtime > preview_mtime) {
+            preview = p;
+            preview_mtime = mtime;
+        }
+    }
+
+    std::sort(subdirs.begin(), subdirs.end());
+    for (const fs::path &subdir : subdirs) {
+        if (scanned >= k_max_count_scan)
+            break;
+        find_folder_preview(subdir, depth + 1, scanned, preview, preview_mtime);
+    }
+}
+
 // Lists one directory: sub-folders and the model files directly inside it. Navigation replaced
 // the old recursive flattening, so nothing here descends on its own.
 // Returns false when a cap was hit and entries had to be dropped.
@@ -552,6 +602,8 @@ bool list_directory(const fs::path &dir, std::vector<FolderEntry> &folders, std:
             entry.path  = p;
             entry.mtime = last_write_time_or_zero(p);
             count_folder_contents(p, entry.file_count, entry.folder_count);
+            int preview_scanned = 0;
+            find_folder_preview(p, 0, preview_scanned, entry.preview_path, entry.preview_mtime);
             folders.push_back(std::move(entry));
             continue;
         }
@@ -1071,6 +1123,13 @@ void MyFilesLibrary::collect_files(nlohmann::json &out, int images)
 
     // dir == root / subdir, so a child's path relative to the root is just one more segment.
     const std::string subdir = get_current_subdir();
+    std::vector<std::string> queued;
+    const int image_limit = images < 0 ? k_max_thumbs : std::min(images, k_max_thumbs);
+    const auto enqueue_if_room = [&queued, image_limit](const std::string &path) -> std::vector<std::string> * {
+        if ((int) queued.size() < image_limit && std::find(queued.begin(), queued.end(), path) == queued.end())
+            return &queued;
+        return nullptr;
+    };
 
     for (const FolderEntry &entry : folders) {
         const std::string name = entry.path.filename().string();
@@ -1082,13 +1141,20 @@ void MyFilesLibrary::collect_files(nlohmann::json &out, int images)
         item["rel"]          = subdir.empty() ? name : subdir + "/" + name;
         item["file_count"]   = entry.file_count;
         item["folder_count"] = entry.folder_count;
+        if (!entry.preview_path.empty()) {
+            item["preview_path"] = entry.preview_path.string();
+            if (entry.preview_mtime > 0) {
+                auto thumb = thumbnail_data_url(entry.preview_path.string(), entry.preview_mtime,
+                                                enqueue_if_room(entry.preview_path.string()));
+                if (!thumb.empty())
+                    item["image"] = thumb;
+            }
+        }
         item["time"]         = entry.mtime > 0 ? wxDateTime(entry.mtime).FormatISOCombined(' ').ToStdString()
                                                : std::string();
         out.push_back(std::move(item));
     }
 
-    std::vector<std::string> queued;
-    const int image_limit = images < 0 ? k_max_thumbs : std::min(images, k_max_thumbs);
     for (size_t i = 0; i < files.size(); ++i) {
         nlohmann::json item;
         const std::string path_u8 = files[i].path.string();
@@ -1100,11 +1166,9 @@ void MyFilesLibrary::collect_files(nlohmann::json &out, int images)
             item["rel_dir"] = files[i].rel_dir;
         if (files[i].mtime > 0) {
             item["time"] = wxDateTime(files[i].mtime).FormatISOCombined(' ').ToStdString();
-            if ((int) i < image_limit) {
-                auto thumb = thumbnail_data_url(path_u8, files[i].mtime, &queued);
-                if (!thumb.empty())
-                    item["image"] = thumb;
-            }
+            auto thumb = thumbnail_data_url(path_u8, files[i].mtime, enqueue_if_room(path_u8));
+            if (!thumb.empty())
+                item["image"] = thumb;
         } else {
             item["time"] = "File is missing";
         }

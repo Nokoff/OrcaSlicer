@@ -7,6 +7,7 @@
 #include "libslic3r/Model.hpp"
 
 #include <atomic>
+#include <limits>
 #include <mutex>
 
 namespace Slic3r {
@@ -88,7 +89,7 @@ protected:
     void on_save(cereal::BinaryOutputArchive &ar) const override;
 
 private:
-    enum class CutterKind { Mesh, Box, Cylinder, Sphere };
+    enum class CutterKind { Mesh, Box, Cylinder, Sphere, Brush };
 
     struct PreviewSurface
     {
@@ -170,12 +171,15 @@ private:
     bool m_diff_delete_input = false;
     bool m_inter_delete_input = false;
     int m_new_face_filament = 0; // 0 inherits the target volume's base filament.
-    CutterKind m_cutter_kind = CutterKind::Mesh;
+    CutterKind m_cutter_kind = CutterKind::Brush;
     Vec3d m_cutter_size = Vec3d(10.0, 10.0, 10.0);
     Vec3d m_cutter_position = Vec3d::Zero();
     Vec3d m_cutter_rotation = Vec3d::Zero();
     bool m_cutter_position_initialized = false;
     bool m_snap_cutter_position = false;
+    double m_brush_radius = 3.0;
+    bool m_brush_stroke_active = false;
+    std::vector<Vec3d> m_brush_stroke_points;
     bool m_section_view_enabled = false;
     bool m_section_clipper_owned = false;
     uint64_t m_cutter_revision = 0;
@@ -185,6 +189,9 @@ private:
     std::shared_ptr<PreviewWork> m_preview_work;
     std::vector<PreviewSurface> m_preview_surfaces;
     std::unique_ptr<GLModel> m_cutter_preview_model;
+    GLModel m_brush_cursor_circle;
+    Vec2d m_brush_cursor_center = Vec2d::Constant(std::numeric_limits<double>::lowest());
+    double m_brush_cursor_screen_radius = -1.0;
     Transform3d m_cutter_preview_instance_transform = Transform3d::Identity();
     int m_cutter_preview_instance_idx = -1;
     std::vector<HiddenPreviewVolume> m_preview_hidden_volumes;
@@ -192,8 +199,10 @@ private:
     void generate_new_volume(bool delete_input, const TriangleMesh& mesh_result, PreviewAnnotations&& annotations);
     void initialize_cutter_position();
     TriangleMesh make_primitive_cutter_mesh() const;
+    TriangleMesh make_brush_cutter_mesh() const;
     void update_cutter_preview();
     void render_cutter_preview();
+    void render_brush_cursor();
     bool create_preview(const std::string& operation, bool delete_input);
     void finish_preview(Preview preview, TriangleMesh mesh, std::vector<uint8_t> source_faces,
                         std::vector<PreviewFacetData> surfaces);
