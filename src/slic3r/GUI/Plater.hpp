@@ -509,7 +509,9 @@ public:
     void reset(bool apply_presets_change = false);
     void reset_with_confirm();
     //BBS: return int for various result
-    int close_with_confirm(std::function<bool(bool yes_or_no)> second_check = nullptr); // BBS close project
+    // deferred_close receives the steps that discard the project, for a caller that may still keep it.
+    int close_with_confirm(std::function<bool(bool yes_or_no)> second_check = nullptr, // BBS close project
+                           std::function<void()>* deferred_close = nullptr);
     //BBS: trigger a restore project event
     void trigger_restore_project(int skip_confirm = 0);
     bool delete_object_from_model(size_t obj_idx, bool refresh_immediately = true); // BBS support refresh immediately

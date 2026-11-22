@@ -18369,7 +18369,9 @@ void Plater::load_project(wxString const& filename2,
 
     // BSS: save project, force close
     int result;
-    if ((result = close_with_confirm(check)) == wxID_CANCEL) {
+    // Run once the load can no longer be cancelled, so that cancelling leaves the current project unchanged.
+    std::function<void()> close_project;
+    if ((result = close_with_confirm(check, &close_project)) == wxID_CANCEL) {
         return;
     }
 
@@ -18380,19 +18382,8 @@ void Plater::load_project(wxString const& filename2,
         BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(": current loading other project, return directly");
         return;
     }
-    else
-        m_loading_project = true;
-
-    m_only_gcode = false;
-    m_exported_file = false;
-    get_notification_manager()->bbl_close_plateinfo_notification();
-    get_notification_manager()->bbl_close_preview_only_notification();
-    get_notification_manager()->bbl_close_3mf_warn_notification();
-    get_notification_manager()->close_notification_of_type(NotificationType::PlaterError);
-    get_notification_manager()->close_notification_of_type(NotificationType::PlaterWarning);
-    get_notification_manager()->close_notification_of_type(NotificationType::SlicingError);
-    get_notification_manager()->close_notification_of_type(NotificationType::SlicingSeriousWarning);
-    get_notification_manager()->close_notification_of_type(NotificationType::SlicingWarning);
+    m_loading_project = true;
+    ScopeGuard loading_project_sc([this]() { m_loading_project = false; }); // Also on an early return
 
     auto path     = into_path(filename);
 
@@ -18411,6 +18402,18 @@ void Plater::load_project(wxString const& filename2,
         }
     }
     bool load_restore = strategy & LoadStrategy::Restore;
+
+    close_project();
+    m_only_gcode = false;
+    m_exported_file = false;
+    get_notification_manager()->bbl_close_plateinfo_notification();
+    get_notification_manager()->bbl_close_preview_only_notification();
+    get_notification_manager()->bbl_close_3mf_warn_notification();
+    get_notification_manager()->close_notification_of_type(NotificationType::PlaterError);
+    get_notification_manager()->close_notification_of_type(NotificationType::PlaterWarning);
+    get_notification_manager()->close_notification_of_type(NotificationType::SlicingError);
+    get_notification_manager()->close_notification_of_type(NotificationType::SlicingSeriousWarning);
+    get_notification_manager()->close_notification_of_type(NotificationType::SlicingWarning);
 
     // Take the Undo / Redo snapshot.
     reset();
@@ -18478,7 +18481,6 @@ void Plater::load_project(wxString const& filename2,
     wxGetApp().params_panel()->switch_to_object_if_has_object_configs();
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " load project done";
-    m_loading_project = false;
 }
 
 // BBS: save logic
@@ -20817,11 +20819,17 @@ void Plater::reset_with_confirm()
 }
 
 // BBS: save logic
-int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check)
+int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check, std::function<void()>* deferred_close)
 {
+    auto close = [deferred_close](std::function<void()> steps) {
+        if (deferred_close)
+            *deferred_close = std::move(steps);
+        else
+            steps();
+    };
     if (up_to_date(false, false)) {
         if (second_check && !second_check(false)) return wxID_CANCEL;
-        model().set_backup_path("");
+        close([this]() { model().set_backup_path(""); });
         return wxID_NO;
     }
 
@@ -20836,25 +20844,20 @@ int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check)
         if (dlg.get_checkbox_state())
             wxGetApp().app_config->set("save_project_choise", result == wxID_YES ? "yes" : "no");
         if (result == wxID_YES) {
-            const bool save_as = get_project_filename(".3mf").IsEmpty();
             result = save_project();
-            // With no file to save to, that was a Save As. Backing out of it must not discard the project.
-            if (save_as && result != wxID_YES)
+            // A failed Save or a Save As backed out of must not discard the project, even with a remembered choice.
+            if (result != wxID_YES)
                 return wxID_CANCEL;
-            if (result == wxID_CANCEL) {
-                if (choise.empty())
-                    return result;
-                else
-                    result = wxID_NO;
-            }
         }
     }
 
     if (second_check && !second_check(result == wxID_YES)) return wxID_CANCEL;
 
-    model().set_backup_path("");
-    up_to_date(true, false);
-    up_to_date(true, true);
+    close([this]() {
+        model().set_backup_path("");
+        up_to_date(true, false);
+        up_to_date(true, true);
+    });
 
     return result;
 }
