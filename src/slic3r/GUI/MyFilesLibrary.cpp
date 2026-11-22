@@ -1,11 +1,15 @@
 #include "MyFilesLibrary.hpp"
 
+#include "Collab/CollabSession.hpp"
+#include "GUI.hpp"
 #include "GUI_App.hpp"
 #include "I18N.hpp"
 #include "MainFrame.hpp"
 #include "MsgDialog.hpp"
+#include "Plater.hpp"
 #include "WebViewDialog.hpp"
 #include "slic3r/Utils/Http.hpp"
+#include "slic3r/Utils/MyFilesMove.hpp"
 
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
@@ -917,25 +921,35 @@ std::vector<std::string> filter_library_paths(const std::vector<std::string> &pa
     return out;
 }
 
-bool move_one_file(const fs::path &from, const fs::path &to, std::string &error)
-{
-    boost::system::error_code ec;
-    fs::rename(from, to, ec);
-    if (!ec)
-        return true;
-
-    // Cross-volume moves fall back to copy + delete.
-    if (copy_file(from.string(), to.string(), error, false) != SUCCESS)
-        return false;
-    fs::remove(from, ec);
-    if (ec) {
-        error = ec.message();
-        return false;
-    }
-    return true;
-}
-
 } // namespace
+
+void MyFilesLibrary::open_file(const std::string &path)
+{
+    if (lower_extension(path) == ".3mf") {
+        wxGetApp().request_open_project(path);
+        return;
+    }
+
+    // Only a 3MF is a project. Opened as one, part.stl would become the project part.3mf beside it, which the
+    // next Save overwrites without asking. Models are imported like a dropped file instead.
+    Plater *plater = wxGetApp().plater();
+    if (!plater)
+        return;
+    if (plater->is_background_process_slicing()) {
+        show_info(nullptr, _L("new or open project file is not allowed during the slicing process!"), _L("Open Project"));
+        return;
+    }
+    if (Collab::CollabSessionManager::scene_locked_with_notice())
+        return;
+    if (plater->only_gcode_mode() || plater->using_exported_file()) {
+        show_info(plater, _L("Cannot add models when in preview mode!"), _L("Add Models"));
+        return;
+    }
+
+    wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
+    Plater::TakeSnapshot snapshot(plater, "Import Object");
+    plater->load_files(std::vector<fs::path>{fs::path(path)}, LoadStrategy::LoadModel);
+}
 
 bool MyFilesLibrary::delete_files(wxWindow *parent, const std::vector<std::string> &paths)
 {
@@ -1005,7 +1019,8 @@ bool MyFilesLibrary::move_files(wxWindow *parent, const std::vector<std::string>
             ++skipped;
             continue;
         }
-        if (fs::exists(to, ec)) {
+        const bool exists = fs::exists(to, ec);
+        if (exists) {
             MessageDialog overwrite_dlg(
                 parent,
                 wxString::Format(_L("\"%s\" already exists in the destination folder. Overwrite it?"),
@@ -1018,11 +1033,10 @@ bool MyFilesLibrary::move_files(wxWindow *parent, const std::vector<std::string>
                 ++skipped;
                 continue;
             }
-            fs::remove(to, ec);
         }
 
         std::string error;
-        if (move_one_file(from, to, error)) {
+        if (MyFilesMove::move_file(from, to, exists, error)) {
             ++moved;
         } else {
             ++failed;

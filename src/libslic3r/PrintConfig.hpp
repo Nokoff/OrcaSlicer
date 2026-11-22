@@ -19,6 +19,7 @@
 #include "libslic3r.h"
 #include "Config.hpp"
 #include "Polygon.hpp"
+#include <atomic>
 #include <boost/preprocessor/facilities/empty.hpp>
 #include <boost/preprocessor/punctuation/comma_if.hpp>
 #include <boost/preprocessor/seq/for_each.hpp>
@@ -2031,7 +2032,8 @@ private:
     uint64_t                    m_timestamp { 1 };
     DynamicPrintConfig          m_data;
 
-    static uint64_t             s_last_timestamp;
+    // Atomic, as separate models are also loaded off the UI thread (My Files thumbnails).
+    static std::atomic<uint64_t> s_last_timestamp;
 };
 
 } // namespace Slic3r

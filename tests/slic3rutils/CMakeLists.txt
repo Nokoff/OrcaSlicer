@@ -97,6 +97,16 @@ set_property(TARGET spoolman_tests PROPERTY FOLDER "tests")
 catch_discover_tests(spoolman_tests TEST_PREFIX "spoolman: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})
 # add_test(${_TEST_NAME}_tests ${_TEST_NAME}_tests "${CATCH_EXTRA_ARGS} exclude:[NotWorking]")
 
+# The file moves of My Files decide whether the user's files survive, so test them without the GUI.
+add_executable(my_files_move_tests
+    MyFilesMove_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/slic3r/Utils/MyFilesMove.cpp
+    )
+target_include_directories(my_files_move_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(my_files_move_tests Catch2::Catch2WithMain boost_libs)
+set_property(TARGET my_files_move_tests PROPERTY FOLDER "tests")
+catch_discover_tests(my_files_move_tests TEST_PREFIX "my_files_move: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})
+
 set(_FILAMENT_TEST_NAME filament_dropdown_mapping)
 add_executable(${_FILAMENT_TEST_NAME}_tests FilamentDropDown_test.cpp)
 target_compile_definitions(${_FILAMENT_TEST_NAME}_tests PRIVATE wxDEBUG_LEVEL=0)

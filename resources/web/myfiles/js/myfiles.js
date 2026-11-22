@@ -48,12 +48,13 @@ function OnInit()
 		var typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
 		if (e.keyCode === 27)
 			ClearMyFilesSelection();
-		else if ((e.keyCode === 46 || e.keyCode === 8) && m_SelectedPaths.length > 0 && !typing) {
+		// A Mac's Delete key sends Backspace. Elsewhere Backspace only ever goes up, as the hint says.
+		else if ((e.keyCode === 46 || (e.keyCode === 8 && IsMacPlatform())) && m_SelectedPaths.length > 0 && !typing) {
 			e.preventDefault();
 			OnDeleteSelectedMyFiles();
 		}
-		// Backspace with nothing selected, or Alt+Left, walks back up the tree.
-		else if ((e.keyCode === 8 || (e.keyCode === 37 && e.altKey)) && m_SelectedPaths.length <= 0 && !typing) {
+		// Backspace, or Alt+Left with nothing selected, walks back up the tree.
+		else if ((e.keyCode === 8 || (e.keyCode === 37 && e.altKey && m_SelectedPaths.length <= 0)) && !typing) {
 			e.preventDefault();
 			OnMyFilesGoUp();
 		}
@@ -439,11 +440,16 @@ function UpdateHeaderState(folder, entryCount)
 	}
 }
 
+function IsMacPlatform()
+{
+	return /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+}
+
 function ShowPlatformHint()
 {
 	// Both variants are translated by TranslatePage(); show the one matching the platform
 	// so the hint never names a modifier key the user does not have.
-	var isMac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+	var isMac = IsMacPlatform();
 	$("#MyFilesHintWin").toggle(!isMac);
 	$("#MyFilesHintMac").toggle(isMac);
 }

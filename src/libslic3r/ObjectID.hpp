@@ -126,7 +126,8 @@ public:
 private:
 	// The first timestamp is non-zero, as zero timestamp means the timestamp is not reliable.
 	Timestamp 			m_timestamp { 1 };
-    static Timestamp    s_last_timestamp;
+    // Atomic, as models are also loaded off the UI thread (My Files thumbnails).
+    static std::atomic<Timestamp> s_last_timestamp;
 	
 	friend class cereal::access;
 	friend class Slic3r::UndoRedo::StackImpl;

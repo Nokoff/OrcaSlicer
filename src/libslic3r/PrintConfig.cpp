@@ -9431,7 +9431,7 @@ const CustomGcodeSpecificConfigDef custom_gcode_specific_config_def;
 
 #undef new_def
 
-uint64_t ModelConfig::s_last_timestamp = 1;
+std::atomic<uint64_t> ModelConfig::s_last_timestamp{1};
 
 static Points to_points(const std::vector<Vec2d> &dpts)
 {

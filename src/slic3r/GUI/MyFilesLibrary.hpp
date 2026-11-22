@@ -61,6 +61,9 @@ public:
     // Move library files to a user-chosen folder. Returns true if any files were moved.
     static bool move_files(wxWindow *parent, const std::vector<std::string> &paths);
 
+    // Open a 3MF as a project; import any other model into the current project.
+    static void open_file(const std::string &path);
+
     static bool is_supported_model_file(const std::string &path);
     static bool is_file_in_library(const std::string &path);
     static bool is_folder_in_library(const std::string &path);

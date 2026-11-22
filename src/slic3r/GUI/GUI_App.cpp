@@ -4409,8 +4409,9 @@ std::string GUI_App::handle_web_request(std::string cmd)
             else if (command_str == "myfiles_open_file") {
                 if (root.get_child_optional("data") != boost::none) {
                     const auto path = root.get_child("data").get_optional<std::string>("path");
+                    // Deferred, as importing can show dialogs and must not run inside the web view's callback.
                     if (path && MyFilesLibrary::is_file_in_library(*path))
-                        request_open_project(*path);
+                        CallAfter([file = *path] { MyFilesLibrary::open_file(file); });
                 }
             }
             else if (command_str == "myfiles_explore_file") {
