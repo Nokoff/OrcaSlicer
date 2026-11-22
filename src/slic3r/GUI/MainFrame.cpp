@@ -521,7 +521,9 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
 
         // BBS: close save project
         int result;
-        if (event.CanVeto() && ((result = m_plater->close_with_confirm(check)) == wxID_CANCEL)) {
+        // Run once nothing can cancel quitting, so that a cancelled quit keeps unsaved changes and the backup.
+        std::function<void()> close_project;
+        if (event.CanVeto() && ((result = m_plater->close_with_confirm(check, &close_project)) == wxID_CANCEL)) {
             event.Veto();
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< "cancelled by close_with_confirm selection";
             return;
@@ -530,6 +532,8 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
             event.Veto();
             return;
         }
+        if (close_project) // not set when quitting cannot be vetoed
+            close_project();
 
     #if 0 // BBS
         //if (m_plater != nullptr) {
