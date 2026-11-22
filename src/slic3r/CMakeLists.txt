@@ -679,6 +679,7 @@ set(SLIC3R_GUI_SOURCES
     Utils/PresetUpdater.hpp
     Utils/MyFilesMove.cpp
     Utils/MyFilesMove.hpp
+    Utils/ProjectPaths.hpp
     Utils/Spoolman.cpp
     Utils/Spoolman.hpp
     Utils/PrintHost.cpp

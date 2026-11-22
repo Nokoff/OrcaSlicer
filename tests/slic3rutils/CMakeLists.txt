@@ -9,6 +9,7 @@ add_executable(${_TEST_NAME}_tests
     ${_TEST_NAME}_tests_main.cpp
     SnapLogClient_test.cpp
     PartPlate_test.cpp
+    ProjectPaths_test.cpp
     ../../src/sentry_wrapper/SentryWrapper.cpp
     ../../src/bury_cfg/bury_point.cpp
     ../../src/common_func/common_func.cpp

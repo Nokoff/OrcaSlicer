@@ -148,6 +148,7 @@
 #include "../Utils/ASCIIFolding.hpp"
 #include "../Utils/ColorSpaceConvert.hpp"
 #include "../Utils/FixModelByWin10.hpp"
+#include "../Utils/ProjectPaths.hpp"
 #include "../Utils/UndoRedo.hpp"
 #include "../Utils/PresetUpdater.hpp"
 #include "../Utils/Process.hpp"
@@ -10670,7 +10671,8 @@ struct Plater::priv
     BoundingBox scaled_bed_shape_bb() const;
 
     // BBS: backup & restore
-    std::vector<size_t> load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi = false);
+    std::vector<size_t> load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi = false,
+                                   bool* settings_loaded = nullptr);
     std::vector<size_t> load_model_objects(const ModelObjectPtrs& model_objects, bool allow_negative_z = false, bool split_object = false, bool auto_drop = true);
 
     fs::path get_export_file_path(GUI::FileType file_type);
@@ -10923,11 +10925,12 @@ struct Plater::priv
     // extension should contain the leading dot, i.e.: ".3mf"
     wxString get_project_filename(const wxString& extension = wxEmptyString) const;
     wxString get_export_gcode_filename(const wxString& extension = wxEmptyString, bool only_filename = false, bool export_all = false) const;
-    void set_project_filename(const wxString& filename);
+    void set_project_filename(const wxString& filename, bool geometry_only = false);
 
     //BBS store bbs project name
     wxString get_project_name();
     void set_project_name(const wxString& project_name);
+    bool import_may_rename_project() const { return ProjectPaths::import_may_rename(m_project_folder, m_project_name == _L("Untitled")); }
     void update_title_dirty_status();
 
     // Call after plater and Canvas#D is initialized
@@ -11921,8 +11924,11 @@ void read_binary_stl(const std::string& filename, std::string& model_id, std::st
 }
 
 // BBS: backup & restore
-std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi)
+std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi,
+                                             bool* settings_loaded)
 {
+    if (settings_loaded)
+        *settings_loaded = false;
     std::vector<size_t> empty_result;
     bool dlg_cont = true;
     bool is_user_cancel = false;
@@ -12489,6 +12495,8 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                                 file_wipe_tower_y = *wipe_tower_y_opt;
 
                             preset_bundle->load_config_model(filename.string(), std::move(config), file_version);
+                            if (settings_loaded)
+                                *settings_loaded = true;
 
                             ConfigOption* bed_type_opt = preset_bundle->project_config.option("curr_bed_type");
                             if (bed_type_opt != nullptr) {
@@ -16975,7 +16983,7 @@ void Plater::priv::update_title_dirty_status()
 #endif    
 }
 
-void Plater::priv::set_project_filename(const wxString& filename)
+void Plater::priv::set_project_filename(const wxString& filename, bool geometry_only)
 {
     boost::filesystem::path full_path = into_path(filename);
     boost::filesystem::path ext = full_path.extension();
@@ -16990,9 +16998,8 @@ void Plater::priv::set_project_filename(const wxString& filename)
     //    // Remove just one extension.
     //    full_path.replace_extension("");
     //}
+    m_project_folder = ProjectPaths::project_folder(full_path, q->m_only_gcode, geometry_only);
     full_path.replace_extension("");
-
-    m_project_folder = full_path.parent_path();
     BOOST_LOG_TRIVIAL(trace) << __FUNCTION__ << __LINE__ << " project folder is:" << m_project_folder.string();
 
     //BBS
@@ -17006,7 +17013,8 @@ void Plater::priv::set_project_filename(const wxString& filename)
 
     wxGetApp().mainframe->update_title();
 
-    if (!m_project_folder.empty() && !q->m_only_gcode)
+    // A file can have no project folder and still belong in Recent files
+    if (full_path.has_parent_path() && !q->m_only_gcode)
         wxGetApp().mainframe->add_to_recent_projects(filename);
 }
 
@@ -18414,7 +18422,8 @@ void Plater::load_project(wxString const& filename2,
     if (strategy & LoadStrategy::Restore)
         input_paths.push_back(into_u8(originfile));
 
-    std::vector<size_t> res = load_files(input_paths, strategy);
+    bool settings_loaded = false;
+    std::vector<size_t> res = load_files(input_paths, strategy, false, &settings_loaded);
 
     reset_project_dirty_initial_presets();
     update_project_dirty_from_presets();
@@ -18423,7 +18432,9 @@ void Plater::load_project(wxString const& filename2,
     // if res is empty no data has been loaded
     if (!res.empty() && (load_restore || !(strategy & LoadStrategy::Silence))) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " call set_project_filename: " << (load_restore ? originfile : filename);
-        p->set_project_filename(load_restore ? originfile : filename);
+        // Whether by choice or because the file had no settings to load
+        const bool geometry_only = !load_restore && !settings_loaded && !m_exported_file;
+        p->set_project_filename(load_restore ? originfile : filename, geometry_only);
         if (load_restore && originfile.IsEmpty()) {
         p->set_project_name(_L("Untitled"));
         }
@@ -18435,6 +18446,9 @@ void Plater::load_project(wxString const& filename2,
         }
 
     }
+    // Reading a 3MF records it for crash recovery even when it does not become the project
+    if (!load_restore && get_project_filename().IsEmpty())
+        ProjectPaths::forget_origin(model().get_backup_path());
 
     // BBS set default 3D view and direction after loading project
     //p->select_view_3D("3D");
@@ -18728,9 +18742,11 @@ void Plater::import_model_id(wxString download_info)
         BOOST_LOG_TRIVIAL(trace) << "import_model_id: target_path = " << target_path.string();
         /* load project */
         // Orca: If download is a zip file, treat it as if file has been drag and dropped on the plater
-        if (target_path.extension() == ".zip")
+        if (target_path.extension() == ".zip") {
             this->load_files(wxArrayString(1, target_path.string()));
-        else
+            p->set_project_filename(target_path.wstring());
+        } else
+            // load_project() names the project, as only it knows whether the file became one
             this->load_project(target_path.wstring());
         /*BBS set project info after load project, project info is reset in load project */
         //p->project.project_model_id = model_id;
@@ -18741,7 +18757,6 @@ void Plater::import_model_id(wxString download_info)
         }
 
         // show save new project
-        p->set_project_filename(target_path.wstring());
         p->notification_manager->push_import_finished_notification(target_path.string(), target_path.parent_path().string(), false);
     }
     else {
@@ -18841,7 +18856,7 @@ void Plater::add_model(bool imperial_units, std::string fname)
     if (imperial_units) strategy = strategy | LoadStrategy::ImperialUnits;
     if (!load_files(paths, strategy, ask_multi).empty()) {
 
-        if (get_project_name() == _L("Untitled") && paths.size() > 0) {
+        if (p->import_may_rename_project() && paths.size() > 0) {
             boost::filesystem::path full_path(paths[0].string());
             p->set_project_name(from_u8(full_path.stem().string()));
         }
@@ -19960,12 +19975,13 @@ void Plater::force_update_all_plate_thumbnails()
 }
 
 // BBS: backup
-std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi) {
+std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi,
+                                       bool* settings_loaded) {
     //BBS: wish to reset state when load a new file
     p->m_slice_all_only_has_gcode = false;
     //BBS: wish to reset all plates stats item selected state when load a new file
     p->preview->get_canvas3d()->reset_select_plate_toolbar_selection();
-    std::vector<size_t> loaded = p->load_files(input_files, strategy, ask_multi);
+    std::vector<size_t> loaded = p->load_files(input_files, strategy, ask_multi, settings_loaded);
     if (!loaded.empty())
     {
         // After loading a project, initialize the filament temp mixing state
@@ -20667,7 +20683,7 @@ void Plater::add_file()
     case LoadFilesType::SingleOther: {
         Plater::TakeSnapshot snapshot(this, snapshot_label);
         if (!load_files(paths, LoadStrategy::LoadModel, false).empty()) {
-            if (get_project_name() == _L("Untitled") && paths.size() > 0) {
+            if (p->import_may_rename_project() && paths.size() > 0) {
                 boost::filesystem::path full_path(paths[0].string());
                 p->set_project_name(from_u8(full_path.stem().string()));
             }
@@ -20690,7 +20706,7 @@ void Plater::add_file()
     case LoadFilesType::MultipleOther: {
         Plater::TakeSnapshot snapshot(this, snapshot_label);
         if (!load_files(paths, LoadStrategy::LoadModel, true).empty()) {
-            if (get_project_name() == _L("Untitled") && paths.size() > 0) {
+            if (p->import_may_rename_project() && paths.size() > 0) {
                 boost::filesystem::path full_path(paths[0].string());
                 p->set_project_name(from_u8(full_path.stem().string()));
             }
@@ -20820,7 +20836,11 @@ int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check)
         if (dlg.get_checkbox_state())
             wxGetApp().app_config->set("save_project_choise", result == wxID_YES ? "yes" : "no");
         if (result == wxID_YES) {
+            const bool save_as = get_project_filename(".3mf").IsEmpty();
             result = save_project();
+            // With no file to save to, that was a Save As. Backing out of it must not discard the project.
+            if (save_as && result != wxID_YES)
+                return wxID_CANCEL;
             if (result == wxID_CANCEL) {
                 if (choise.empty())
                     return result;
