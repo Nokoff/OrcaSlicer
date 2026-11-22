@@ -1,12 +1,9 @@
 #include "MyFilesLibrary.hpp"
 
-#include "Collab/CollabSession.hpp"
-#include "GUI.hpp"
 #include "GUI_App.hpp"
 #include "I18N.hpp"
 #include "MainFrame.hpp"
 #include "MsgDialog.hpp"
-#include "Plater.hpp"
 #include "WebViewDialog.hpp"
 #include "slic3r/Utils/Http.hpp"
 #include "slic3r/Utils/MyFilesMove.hpp"
@@ -922,34 +919,6 @@ std::vector<std::string> filter_library_paths(const std::vector<std::string> &pa
 }
 
 } // namespace
-
-void MyFilesLibrary::open_file(const std::string &path)
-{
-    if (lower_extension(path) == ".3mf") {
-        wxGetApp().request_open_project(path);
-        return;
-    }
-
-    // Only a 3MF is a project. Opened as one, part.stl would become the project part.3mf beside it, which the
-    // next Save overwrites without asking. Models are imported like a dropped file instead.
-    Plater *plater = wxGetApp().plater();
-    if (!plater)
-        return;
-    if (plater->is_background_process_slicing()) {
-        show_info(nullptr, _L("new or open project file is not allowed during the slicing process!"), _L("Open Project"));
-        return;
-    }
-    if (Collab::CollabSessionManager::scene_locked_with_notice())
-        return;
-    if (plater->only_gcode_mode() || plater->using_exported_file()) {
-        show_info(plater, _L("Cannot add models when in preview mode!"), _L("Add Models"));
-        return;
-    }
-
-    wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
-    Plater::TakeSnapshot snapshot(plater, "Import Object");
-    plater->load_files(std::vector<fs::path>{fs::path(path)}, LoadStrategy::LoadModel);
-}
 
 bool MyFilesLibrary::delete_files(wxWindow *parent, const std::vector<std::string> &paths)
 {

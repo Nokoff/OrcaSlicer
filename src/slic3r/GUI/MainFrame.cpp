@@ -3955,6 +3955,25 @@ void MainFrame::get_recent_projects(boost::property_tree::wptree &tree, int imag
     }
 }
 
+static void import_listed_model(Plater *plater, const wxString &filename)
+{
+    if (plater->is_background_process_slicing()) {
+        show_info(nullptr, _L("new or open project file is not allowed during the slicing process!"), _L("Open Project"));
+        return;
+    }
+    if (Collab::CollabSessionManager::scene_locked_with_notice())
+        return;
+    if (plater->only_gcode_mode() || plater->using_exported_file()) {
+        show_info(plater, _L("Cannot add models when in preview mode!"), _L("Add Models"));
+        return;
+    }
+
+    wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
+    Plater::TakeSnapshot snapshot(plater, "Import Object");
+    plater->load_files(std::vector<boost::filesystem::path>{into_path(filename)}, LoadStrategy::LoadModel);
+}
+
+// Serves Recent files and My Files, which both list models as well as projects.
 void MainFrame::open_recent_project(size_t file_id, wxString const & filename)
 {
     if (file_id == size_t(-1)) {
@@ -3962,7 +3981,11 @@ void MainFrame::open_recent_project(size_t file_id, wxString const & filename)
     }
     if (wxFileExists(filename)) {
         CallAfter([this, filename] {
-            if (wxGetApp().can_load_project())
+            // Only a 3MF is a project. Opened as one, part.stl would become the project part.3mf beside it, which
+            // the next Save overwrites without asking. Models are imported like a dropped file instead.
+            if (!filename.Lower().EndsWith(".3mf"))
+                import_listed_model(m_plater, filename);
+            else if (wxGetApp().can_load_project())
                 m_plater->load_project(filename);
         });
     }
