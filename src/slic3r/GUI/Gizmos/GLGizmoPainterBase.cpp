@@ -1151,6 +1151,33 @@ void GLGizmoPainterBase::SplitPaintingStroke()
     m_button_down = pressed_button;
 }
 
+void GLGizmoPainterBase::ResetPaintingStroke()
+{
+    // Painting changes are applied as each event arrives in this implementation;
+    // finish the current interaction before the selector or scene is replaced.
+    FinishPaintingInteraction();
+}
+
+void GLGizmoPainterBase::DetachTriangleSelectorGlResources()
+{
+    std::vector<unsigned int> buffer_ids;
+    for (const auto& selector : m_triangle_selectors) {
+        if (auto* patch_selector = dynamic_cast<TriangleSelectorPatch*>(selector.get())) {
+            std::vector<unsigned int> ids = patch_selector->DetachGlResources();
+            buffer_ids.insert(buffer_ids.end(), ids.begin(), ids.end());
+        }
+    }
+    if (!buffer_ids.empty())
+        wxGetApp().get_opengl_manager().EnqueueBufferDeletes(std::move(buffer_ids));
+}
+
+void GLGizmoPainterBase::ReleaseTriangleSelectorGlResources()
+{
+    for (const auto& selector : m_triangle_selectors)
+        if (auto* patch_selector = dynamic_cast<TriangleSelectorPatch*>(selector.get()))
+            patch_selector->ReleaseGlResources();
+}
+
 bool GLGizmoPainterBase::on_mouse(const wxMouseEvent &mouse_event)
 {
     // wxCoord == int --> wx/types.h
@@ -1906,6 +1933,26 @@ void TriangleSelectorPatch::release_geometry()
     this->clear();
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: released geometry")%__LINE__;
+}
+
+std::vector<unsigned int> TriangleSelectorPatch::DetachGlResources()
+{
+    std::vector<unsigned int> buffer_ids;
+    for (unsigned int& id : m_vertices_VBO_ids) {
+        if (id != 0)
+            buffer_ids.push_back(id);
+        id = 0;
+    }
+    return buffer_ids;
+}
+
+void TriangleSelectorPatch::ReleaseGlResources()
+{
+    for (unsigned int& id : m_vertices_VBO_ids) {
+        if (id != 0)
+            glsafe(::glDeleteBuffers(1, &id));
+        id = 0;
+    }
 }
 
 void TriangleSelectorPatch::finalize_vertices()

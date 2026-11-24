@@ -3609,8 +3609,7 @@ bool Model::obj_import_face_color_deal(const std::vector<unsigned char> &face_fi
                 auto face         = volume->mesh().its.indices[i];
                 auto filament_id = face_filament_ids[i];
                 if (filament_id == first_extruder_id) { continue; }
-                std::string result;
-                get_real_filament_id(filament_id, result);
+                const std::string result = serialized_filament_state(filament_id);
                 volume->mmu_segmentation_facets.set_triangle_from_string(i, result);
             }
             return true;

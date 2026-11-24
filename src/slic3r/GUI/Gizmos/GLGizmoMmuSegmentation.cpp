@@ -1514,7 +1514,6 @@ void GLGizmoMmuSegmentation::init_model_triangle_selectors()
     ResetPaintingStroke();
     DetachTriangleSelectorGlResources();
     m_triangle_selectors.clear();
-    m_heightRangeIndices.clear();
     m_volumes_extruder_idxs.clear();
 
     // Don't continue when extruders colors are not initialized

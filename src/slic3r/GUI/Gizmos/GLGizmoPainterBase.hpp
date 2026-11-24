@@ -58,6 +58,7 @@ public:
     //void         render(const Transform3d& matrix) { this->render(nullptr, matrix); }
     void         set_wireframe_needed(bool need_wireframe) { m_need_wireframe = need_wireframe; }
     bool         get_wireframe_needed() { return m_need_wireframe; }
+    void         SetPointerPreviewEnabled(bool enabled) { m_pointer_preview_enabled = enabled; }
 
     // BBS
     void request_update_render_data(bool paint_changed = false, bool full_update = true)
@@ -103,6 +104,7 @@ protected:
     void render_paint_contour(const Transform3d& matrix);
 
     bool                                m_need_wireframe {false};
+    bool                                m_pointer_preview_enabled {false};
 };
 
 // BBS
@@ -122,7 +124,7 @@ struct TrianglePatch {
 
 class TriangleSelectorPatch : public TriangleSelectorGUI {
 public:
-    explicit TriangleSelectorPatch(const TriangleMesh& mesh, const std::vector<ColorRGBA> ebt_colors, float edge_limit = 0.6f)
+    explicit TriangleSelectorPatch(const TriangleMesh& mesh, const std::vector<ColorRGBA> ebt_colors, float edge_limit = 0.6f, bool /*use_render_chunks*/ = false)
         : TriangleSelectorGUI(mesh, edge_limit), m_ebt_colors(ebt_colors) {}
     ~TriangleSelectorPatch() override { release_geometry(); }
 
@@ -142,6 +144,8 @@ public:
         m_ebt_colors = ebt_colors;
     }
     void set_filter_state(bool is_filter_state);
+    std::vector<unsigned int> DetachGlResources();
+    void ReleaseGlResources();
 
     constexpr static float GapAreaMin = 0.f;
     constexpr static float GapAreaMax = 5.f;
@@ -240,6 +244,9 @@ public:
     virtual bool gizmo_event(SLAGizmoEventType action, const Vec2d& mouse_position, bool shift_down, bool alt_down, bool control_down);
     void FinishPaintingInteraction();
     void SplitPaintingStroke();
+    void ResetPaintingStroke();
+    void DetachTriangleSelectorGlResources();
+    void ReleaseTriangleSelectorGlResources();
 
     // Following function renders the triangles and cursor. Having this separated
     // from usual on_render method allows to render them before transparent

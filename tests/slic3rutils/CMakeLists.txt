@@ -10,13 +10,13 @@ add_executable(${_TEST_NAME}_tests
     SnapLogClient_test.cpp
     PartPlate_test.cpp
     ProjectPaths_test.cpp
-    ../../src/sentry_wrapper/SentryWrapper.cpp
-    ../../src/bury_cfg/bury_point.cpp
+    ../../src/app_common/SentryWrapper.cpp
+    ../../src/app_common/bury_point.cpp
     ../../src/common_func/common_func.cpp
     )
 target_compile_definitions(${_TEST_NAME}_tests PRIVATE BURY_EXPORTS)
 if (MSVC)
-    target_sources(${_TEST_NAME}_tests PRIVATE ../../src/dev-utils/BaseException.cpp ../../src/dev-utils/StackWalker.cpp)
+    target_sources(${_TEST_NAME}_tests PRIVATE ../../src/app_common/BaseException.cpp ../../src/app_common/StackWalker.cpp)
     set_source_files_properties(../../src/common_func/common_func.cpp PROPERTIES
         COMPILE_OPTIONS /FI"${CMAKE_CURRENT_SOURCE_DIR}/../../src/slic3r/pchheader.hpp")
 endif()

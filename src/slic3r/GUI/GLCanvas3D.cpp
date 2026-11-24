@@ -9444,41 +9444,6 @@ std::optional<GLCanvas3D::PickingPassResult> GLCanvas3D::_picking_pass(bool& sin
     const SceneRaycaster::HitResult& hit = result.hit;
     ApplyPickingHit(hit);
 
-            break;
-        }
-        case SceneRaycaster::EType::Gizmo:
-        case SceneRaycaster::EType::FallbackGizmo:
-        {
-            const Size& cnv_size = get_canvas_size();
-            const bool inside = 0 <= m_mouse.position.x() && m_mouse.position.x() < cnv_size.get_width() &&
-                0 <= m_mouse.position.y() && m_mouse.position.y() < cnv_size.get_height();
-            m_gizmos.set_hover_id(inside ? hit.raycaster_id : -1);
-            break;
-        }
-        case SceneRaycaster::EType::Bed:
-        {
-            // BBS: add plate picking logic
-            int            plate_hover_id = hit.raycaster_id;
-            PartPlateList& plate_list     = wxGetApp().plater()->get_partplate_list();
-            if (plate_hover_id >= 0 && plate_hover_id / PartPlate::GRABBER_COUNT < plate_list.get_plate_count()) {
-                plate_list.set_hover_id(plate_hover_id);
-                m_hover_plate_idxs.emplace_back(plate_hover_id);
-            } else {
-                plate_list.reset_hover_id();
-            }
-            m_gizmos.set_hover_id(-1);
-            break;
-        }
-        default:
-        {
-            assert(false);
-            break;
-        }
-        }
-    }
-    else
-        m_gizmos.set_hover_id(-1);
-
     sinkingContourSceneChanged = _update_volumes_hover_state();
 
 #if ENABLE_RAYCAST_PICKING_DEBUG
