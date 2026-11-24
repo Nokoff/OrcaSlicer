@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.4.2 - 2026-11-23
+
+### Added
+
+- Added Print History and Snapmaker Space Online Models to the home page.
+- Added multi-dovetail cutting, mesh subdivision, and optional model shadows.
+
+### Improved
+
+- Improved top-surface paths, overhang speed control, painting responsiveness, and model selection in large scenes.
+
+### Fixed
+
+- Fixed multi-color painting and filament assignment, prime-tower clearance, 3MF/G-code preview consistency, and several platform-specific crashes and startup issues.
+
 ## 2.4.1 - 2026-09-25
 
 ### Fixed

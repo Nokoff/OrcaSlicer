@@ -1132,6 +1132,25 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
     return false;
 }
 
+void GLGizmoPainterBase::FinishPaintingInteraction()
+{
+    if (m_button_down == Button::None)
+        return;
+
+    const SLAGizmoEventType release_action = m_button_down == Button::Left ? SLAGizmoEventType::LeftUp : SLAGizmoEventType::RightUp;
+    gizmo_event(release_action, m_last_mouse_click, false, false, false);
+}
+
+void GLGizmoPainterBase::SplitPaintingStroke()
+{
+    const Button pressed_button = m_button_down;
+    if (pressed_button == Button::None)
+        return;
+
+    FinishPaintingInteraction();
+    m_button_down = pressed_button;
+}
+
 bool GLGizmoPainterBase::on_mouse(const wxMouseEvent &mouse_event)
 {
     // wxCoord == int --> wx/types.h

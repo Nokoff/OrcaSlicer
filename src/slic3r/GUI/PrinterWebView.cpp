@@ -17,7 +17,7 @@
 #include "slic3r/GUI/SSWCP.hpp"
 #include "slic3r/GUI/PrinterFileManager.hpp"
 #include "slic3r/GUI/Widgets/Button.hpp"
-#include "sentry_wrapper/SentryWrapper.hpp"
+#include "app_common/SentryWrapper.hpp"
 
 namespace pt = boost::property_tree;
 

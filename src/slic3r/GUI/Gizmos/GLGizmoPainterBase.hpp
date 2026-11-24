@@ -238,6 +238,8 @@ public:
     ~GLGizmoPainterBase() override;
     void data_changed(bool is_serializing) override;
     virtual bool gizmo_event(SLAGizmoEventType action, const Vec2d& mouse_position, bool shift_down, bool alt_down, bool control_down);
+    void FinishPaintingInteraction();
+    void SplitPaintingStroke();
 
     // Following function renders the triangles and cursor. Having this separated
     // from usual on_render method allows to render them before transparent

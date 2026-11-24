@@ -7,7 +7,7 @@
 #include <shellapi.h>
 #include <wchar.h>
 #include <shlobj.h>
-#include "sentry_wrapper/SentryWrapper.hpp"
+#include "app_common/SentryWrapper.hpp"
 
 #ifndef SLIC3R_WRAPPER_DLL_NAME
 #define SLIC3R_WRAPPER_DLL_NAME L"Snapmaker_Orca.dll"
